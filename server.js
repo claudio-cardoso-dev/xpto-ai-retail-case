@@ -1,9 +1,9 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
-
-const inventory = require('./data/inventory');
-const chatController = require('./controllers/chatController');
+const swaggerUi = require('swagger-ui-express');
+const swaggerJsdoc = require('swagger-jsdoc');
+const apiRoutes = require('./src/routes');
 
 dotenv.config();
 
@@ -14,20 +14,46 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
-// Routes
+// Swagger Configuration
+const swaggerOptions = {
+  definition: {
+    openapi: '3.0.0',
+    info: {
+      title: 'XPTO Retail AI API',
+      version: '1.0.0',
+      description: 'API para demonstração de chatbot ativo e estoque da XPTO Sneakers.',
+    },
+    servers: [
+      {
+        url: `http://localhost:${PORT}`,
+        description: 'Servidor Local'
+      },
+      {
+        url: `https://api.claudiocardoso.dev/api/xpto`,
+        description: 'Servidor de Produção VPS'
+      }
+    ],
+  },
+  apis: ['./src/routes/*.js'],
+};
+
+const swaggerDocs = swaggerJsdoc(swaggerOptions);
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
+
+// Rotas Base
 app.get('/', (req, res) => {
-  res.send('XPTO Retail AI API is running...');
+  res.send('XPTO Retail AI API is running... Acesse /api-docs para documentação.');
 });
 
-// Inventory Routes
-app.get('/api/inventory', (req, res) => {
-  res.json(inventory);
-});
-
-// Chatbot Route
-app.post('/api/chat', chatController.handleMessage);
+// Registra as rotas da API
+app.use('/api', apiRoutes);
 
 // Start server
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+    console.log(`Swagger docs available at http://localhost:${PORT}/api-docs`);
+  });
+}
+
+module.exports = app;

@@ -1,4 +1,4 @@
-const inventory = [
+const inventoryData = [
   // Nike
   { id: 'N1', brand: 'Nike', model: 'Air Max 90', colors: ['Preto', 'Branco', 'Vermelho'], price: 799.99, stock: 15, image: 'https://images.unsplash.com/photo-1605348532760-6753d2c43329?auto=format&fit=crop&q=80&w=400' },
   { id: 'N2', brand: 'Nike', model: 'Air Force 1', colors: ['Branco', 'Preto', 'Azul'], price: 699.99, stock: 20, image: 'https://images.unsplash.com/photo-1595950653106-6c9ebd614d3a?auto=format&fit=crop&q=80&w=400' },
@@ -35,4 +35,23 @@ const inventory = [
   { id: 'V5', brand: 'Vans', model: 'Half Cab', colors: ['Preto', 'Marrom', 'Azul'], price: 549.99, stock: 14, image: 'https://images.unsplash.com/photo-1525966222134-fcfa99b8ae77?auto=format&fit=crop&q=80&w=400' },
 ];
 
-module.exports = inventory;
+class InventoryRepository {
+  /**
+   * Retorna todo o estoque
+   */
+  async getAll() {
+    return inventoryData;
+  }
+
+  /**
+   * Retorna produtos filtrados por marca (limitado)
+   * @param {string} brand Nome da marca
+   * @param {number} limit Limite de resultados
+   */
+  async findByBrand(brand, limit = 5) {
+    const filtered = inventoryData.filter(p => p.brand.toLowerCase() === brand.toLowerCase());
+    return filtered.slice(0, limit);
+  }
+}
+
+module.exports = new InventoryRepository();
