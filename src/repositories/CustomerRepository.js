@@ -30,12 +30,13 @@ class CustomerRepository {
    */
   createCustomer(data) {
     return new Promise((resolve, reject) => {
-      const query = `INSERT INTO customers (name, email, telefone, address) VALUES (?, ?, ?, ?)`;
+      const query = `INSERT INTO customers (name, email, telefone, address, profile) VALUES (?, ?, ?, ?, ?)`;
       
       const email = data.email || null;
       const telefone = data.telefone || null;
+      const profile = data.profile || 'BTC';
       
-      db.run(query, [data.name, email, telefone, data.address], function(err) {
+      db.run(query, [data.name, email, telefone, data.address, profile], function(err) {
         if (err) {
           console.error('Erro ao criar cliente:', err);
           return reject(err);
@@ -51,6 +52,59 @@ class CustomerRepository {
       db.run(query, [newAddress, identifier, identifier, cleanIdentifier], function(err) {
         if (err) {
           console.error('Erro ao atualizar endereço:', err);
+          return reject(err);
+        }
+        resolve(this.changes);
+      });
+    });
+  }
+
+  getLastOrderStatus(customerId) {
+    return new Promise((resolve, reject) => {
+      const query = `SELECT id, status, total, address FROM orders WHERE customer_id = ? ORDER BY created_at DESC LIMIT 1`;
+      db.get(query, [customerId], (err, row) => {
+        if (err) {
+          console.error('Erro ao buscar pedido:', err);
+          return reject(err);
+        }
+        resolve(row || null);
+      });
+    });
+  }
+
+  getAllCustomers() {
+    return new Promise((resolve, reject) => {
+      const query = `SELECT * FROM customers ORDER BY id DESC`;
+      db.all(query, [], (err, rows) => {
+        if (err) {
+          console.error('Erro ao listar clientes:', err);
+          return reject(err);
+        }
+        resolve(rows || []);
+      });
+    });
+  }
+
+  updateCustomer(id, data) {
+    return new Promise((resolve, reject) => {
+      const query = `UPDATE customers SET name = ?, email = ?, telefone = ?, address = ?, profile = ? WHERE id = ?`;
+      const profile = data.profile || 'BTC';
+      db.run(query, [data.name, data.email, data.telefone, data.address, profile, id], function(err) {
+        if (err) {
+          console.error('Erro ao atualizar cliente:', err);
+          return reject(err);
+        }
+        resolve(this.changes);
+      });
+    });
+  }
+
+  deleteCustomer(id) {
+    return new Promise((resolve, reject) => {
+      const query = `DELETE FROM customers WHERE id = ?`;
+      db.run(query, [id], function(err) {
+        if (err) {
+          console.error('Erro ao deletar cliente:', err);
           return reject(err);
         }
         resolve(this.changes);

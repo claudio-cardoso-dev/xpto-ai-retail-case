@@ -147,10 +147,12 @@ class ChatService {
         if (toolCalled === 'lookupCustomer') {
           const customer = await customerRepository.findByTelefoneOrEmail(toolArgs.identifier);
           if (customer) {
+            context.customerId = customer.id;
             context.customerName = customer.name;
             context.customerAddress = customer.address;
+            context.customerProfile = customer.profile;
             context.customerIdentifier = customer.telefone || customer.email || toolArgs.identifier;
-            finalResponse.text = `Bem-vindo de volta, ${customer.name}! O que você gostaria de pedir hoje?`;
+            finalResponse.text = `Bem-vindo de volta, ${customer.name}! Identifiquei seu cadastro.`;
           } else {
             finalResponse.action = 'SHOW_REGISTER_FORM';
             finalResponse.text = "Ainda não encontrei seu cadastro no nosso sistema. Por favor, preencha o formulário rápido abaixo para iniciarmos seu pedido:";
@@ -237,6 +239,32 @@ class ChatService {
             }
           }
         }
+        else if (toolCalled === 'navigateToScreen') {
+          finalResponse.action = `NAVIGATE_${toolArgs.screen.toUpperCase()}`;
+          finalResponse.text = `Entendido! Carregando o ambiente ${toolArgs.screen.toUpperCase()} para você...`;
+        }
+        else if (toolCalled === 'getOrderStatus') {
+          if (!context.customerId) {
+            finalResponse.text = "Preciso saber quem é você para consultar seus pedidos. Pode me informar seu telefone ou e-mail?";
+          } else {
+            const order = await customerRepository.getLastOrderStatus(context.customerId);
+            if (order) {
+              finalResponse.text = `Seu último pedido (R$ ${order.total.toFixed(2)}) está com o status: "${order.status}". O endereço de entrega é ${order.address}.`;
+            } else {
+              finalResponse.text = "Não encontrei nenhum pedido recente no seu cadastro.";
+            }
+          }
+        }
+        else if (toolCalled === 'triggerCustomerEvaluation') {
+          context.isEvaluating = true;
+          finalResponse.text = "Gostaria de avaliar seu atendimento hoje? De 1 a 5, que nota você daria para a nossa conversa?";
+          finalResponse.options = ["1", "2", "3", "4", "5"];
+        }
+        else if (toolCalled === 'submitFeedback') {
+          context.isEvaluating = false;
+          finalResponse.text = "Muito obrigado pela sua avaliação! Seu feedback é muito importante para nós. Tenha um ótimo dia!";
+          finalResponse.options = [];
+        }
         
         aiResponseText = finalResponse.text; // Salva para o histórico o que geramos via tool
       } else {
@@ -244,8 +272,8 @@ class ChatService {
       }
 
       // Adiciona botões auxiliares na interface
-      finalResponse.options = [];
-      if (finalResponse.action !== 'CREATE_ORDER' && finalResponse.action !== 'SHOW_REGISTER_FORM') {
+      if (!finalResponse.options) finalResponse.options = [];
+      if (finalResponse.action !== 'CREATE_ORDER' && finalResponse.action !== 'SHOW_REGISTER_FORM' && !finalResponse.action?.startsWith('NAVIGATE_') && !context.isEvaluating) {
         
         const lowerText = finalResponse.text.toLowerCase();
 
@@ -255,7 +283,9 @@ class ChatService {
         } else {
           if (lowerText.includes('?') && (lowerText.includes('algo mais') || lowerText.includes('alguma coisa'))) {
             // Quando o bot pergunta se quer algo mais, oferecemos navegação rápida
-            finalResponse.options.push("Ver cardápio", "Salgados", "Doces", "Bebidas");
+            if (!finalResponse.options.includes("Ver cardápio")) {
+              finalResponse.options.push("Ver cardápio", "Salgados", "Doces", "Bebidas");
+            }
           } 
           
           const isAskingQuantity = lowerText.includes('quantidade') || lowerText.includes('quantas') || lowerText.includes('quantos');
@@ -264,7 +294,7 @@ class ChatService {
              finalResponse.options.push("Ver cardápio", "Salgados", "Doces", "Bebidas");
           }
           
-          if (Object.keys(context.cart).length > 0) {
+          if (Object.keys(context.cart).length > 0 && !finalResponse.options.includes("Fechar Pedido")) {
             finalResponse.options.push("Fechar Pedido");
           }
         }

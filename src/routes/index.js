@@ -114,4 +114,46 @@ router.get('/orders/:identifier', authMiddleware, orderController.getOrder.bind(
  */
 router.post('/metrics', authMiddleware, metricsController.saveMetric.bind(metricsController));
 
+const customerController = require('../controllers/CustomerController');
+
+/**
+ * @swagger
+ * /api/customers:
+ *   get:
+ *     summary: Lista todos os clientes
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/customers', authMiddleware, customerController.getAll.bind(customerController));
+
+/**
+ * @swagger
+ * /api/customers:
+ *   post:
+ *     summary: Cria um novo cliente
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/customers', authMiddleware, customerController.create.bind(customerController));
+
+/**
+ * @swagger
+ * /api/customers/{id}:
+ *   put:
+ *     summary: Atualiza um cliente
+ *     security:
+ *       - bearerAuth: []
+ */
+router.put('/customers/:id', authMiddleware, customerController.update.bind(customerController));
+
+/**
+ * @swagger
+ * /api/customers/{id}:
+ *   delete:
+ *     summary: Exclui um cliente
+ *     security:
+ *       - bearerAuth: []
+ */
+router.delete('/customers/:id', authMiddleware, customerController.delete.bind(customerController));
+
 module.exports = router;

@@ -20,7 +20,8 @@ function initDb() {
         name TEXT NOT NULL,
         email TEXT UNIQUE,
         telefone TEXT UNIQUE,
-        address TEXT NOT NULL
+        address TEXT NOT NULL,
+        profile TEXT DEFAULT 'BTC'
       );
 
       CREATE TABLE IF NOT EXISTS orders (
@@ -47,10 +48,16 @@ function initDb() {
     db.get(checkQuery, (err, row) => {
       if (!err && row.count === 0) {
         console.log('Populando banco com clientes mockados...');
-        const insert = db.prepare(`INSERT INTO customers (name, email, telefone, address) VALUES (?, ?, ?, ?)`);
-        insert.run('João Silva', 'joao@email.com', '11999999999', 'Rua das Flores, 123 - Centro');
-        insert.run('Maria Souza', 'maria@email.com', '11888888888', 'Av. Paulista, 1000 - Bela Vista');
+        const insert = db.prepare(`INSERT INTO customers (name, email, telefone, address, profile) VALUES (?, ?, ?, ?, ?)`);
+        insert.run('João Silva', 'joao@example.com', '11999999999', 'Rua A, 123', 'BTC');
+        insert.run('Maria Souza', 'maria@empresa.com', '11988888888', 'Av B, 456', 'BTB');
+        insert.run('Claudio Cardoso', 'claudio@cardoso.dev', '11977777777', 'Rua C, 789', 'BTX');
         insert.finalize();
+        
+        // Mock order for testing getOrderStatus
+        const insertOrder = db.prepare(`INSERT INTO orders (customer_id, total, status, address) VALUES (?, ?, ?, ?)`);
+        insertOrder.run(3, 150.00, 'Em preparo', 'Rua C, 789');
+        insertOrder.finalize();
       }
     });
   });
