@@ -1,11 +1,12 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
+
+dotenv.config();
+
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
 const apiRoutes = require('./src/routes');
-
-dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -38,7 +39,7 @@ const swaggerOptions = {
 };
 
 const swaggerDocs = swaggerJsdoc(swaggerOptions);
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
+app.use('/api/xpto/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
 
 // Rotas Base
 app.get('/', (req, res) => {
@@ -46,7 +47,7 @@ app.get('/', (req, res) => {
 });
 
 // Registra as rotas da API
-app.use('/api', apiRoutes);
+app.use('/api/xpto/api', apiRoutes);
 
 // Start server
 if (require.main === module) {

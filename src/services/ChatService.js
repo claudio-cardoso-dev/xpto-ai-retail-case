@@ -1,58 +1,297 @@
 const inventoryRepository = require('../repositories/InventoryRepository');
+const customerRepository = require('../repositories/CustomerRepository');
+const Groq = require('groq-sdk');
+const crypto = require('crypto');
+
+const SalesAgent = require('../agents/SalesAgent');
+
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 class ChatService {
-  /**
-   * Processa a mensagem do usuário e devolve a resposta do bot
-   * @param {string} message Mensagem enviada pelo cliente
-   * @param {object} context Contexto anterior da conversa
-   */
   async processMessage(message, context = {}) {
-    const lowerMessage = message.toLowerCase();
-    const response = {
+    // 1. Inicializa estado
+    if (!context.protocolId) {
+      context.protocolId = `XPTO-${new Date().getFullYear()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
+    }
+    if (!context.cart) context.cart = {}; 
+    if (!context.hasCrossSeled) context.hasCrossSeled = false;
+    if (!context.history) context.history = [];
+    
+    // Busca estoque reduzido para o SalesAgent
+    const inventory = await inventoryRepository.getAll();
+    const inventoryMin = inventory.map(p => ({
+      id: p.id,
+      name: p.name,
+      price: p.price
+    }));
+
+    // Verifica se é uma interceptação de formulário do frontend
+    let systemInjectedMessage = message;
+    if (message.startsWith('[DADOS_DO_FORMULARIO]:')) {
+      try {
+        const formData = JSON.parse(message.replace('[DADOS_DO_FORMULARIO]:', '').trim());
+        context.customerName = formData.name;
+        context.customerAddress = `${formData.cep} - ${formData.number}`;
+        
+        await customerRepository.createCustomer({
+          name: formData.name,
+          email: formData.email,
+          telefone: formData.phone,
+          address: context.customerAddress
+        });
+        context.customerIdentifier = formData.phone || formData.email;
+        
+        systemInjectedMessage = `[AÇÃO DO SISTEMA]: O cliente preencheu o formulário de cadastro com sucesso. O nome dele é ${formData.name}. Agradeça e pergunte o que ele deseja pedir hoje. Não chame requestCustomerRegistration novamente.`;
+      } catch (e) {
+        console.error("Erro ao parsear formulário", e);
+      }
+    } else if (message.toLowerCase().includes('quero pedir:')) {
+       const productName = message.replace(/Quero pedir:/i, '').trim();
+       context.pendingProduct = productName;
+       systemInjectedMessage = `[AÇÃO DO SISTEMA]: O cliente clicou no botão para comprar o produto "${productName}". Apenas pergunte: "Quantas unidades você deseja?".`;
+    }
+
+    const systemPrompt = SalesAgent.getSystemPrompt(context, inventoryMin);
+    
+    // Constrói array de mensagens para OpenAI/Groq format (que é mais seguro de prever)
+    const messages = [
+      { role: 'system', content: systemPrompt }
+    ];
+    
+    if (context.history.length > 0) {
+      context.history.forEach(h => {
+        messages.push({ role: h.role, content: h.text });
+      });
+    }
+    messages.push({ role: 'user', content: systemInjectedMessage });
+
+    let finalResponse = {
       text: '',
       options: [],
       products: [],
-      transferToHuman: false,
-      context: { ...context }
+      redirectToSite: false,
+      action: null,
+      context: context
     };
 
-    // 1. Initial Greeting
-    if (lowerMessage.includes('olá') || lowerMessage.includes('oi') || lowerMessage.includes('bom dia') || lowerMessage.includes('boa tarde')) {
-      response.text = 'Olá! Sou o assistente de vendas da XPTO Sneakers. Como posso ajudar você hoje?';
-      response.options = ['Ver catálogo', 'Dúvida sobre pedido', 'Falar com um humano'];
-      return response;
-    }
+    try {
+      let aiResponseText = '';
+      let toolCalled = null;
+      let toolArgs = {};
 
-    // 2. Transfer to Human
-    if (lowerMessage.includes('humano') || lowerMessage.includes('atendente') || lowerMessage.includes('falar com uma pessoa')) {
-      response.text = 'Entendi. Estou transferindo você para a nossa equipe de especialistas. Por favor, aguarde um instante.';
-      response.transferToHuman = true;
-      return response;
-    }
+      try {
+        // Tenta usar Groq com Llama-3.1 (suporta Tool Calling perfeitamente)
+        const completion = await groq.chat.completions.create({
+          messages: messages,
+          model: 'llama-3.1-8b-instant',
+          tools: SalesAgent.getGroqTools(),
+          tool_choice: "auto",
+          temperature: 0.2,
+        });
 
-    // 3. Brand Filtering (Mover para antes do catálogo genérico)
-    const brands = ['nike', 'adidas', 'puma', 'reebok', 'vans'];
-    const matchedBrand = brands.find(brand => lowerMessage.includes(brand));
-    
-    if (matchedBrand) {
-      const filteredProducts = await inventoryRepository.findByBrand(matchedBrand, 5);
-      response.text = `Excelente escolha! Aqui estão alguns modelos da ${matchedBrand.charAt(0).toUpperCase() + matchedBrand.slice(1)} que temos em estoque:`;
-      response.products = filteredProducts;
-      response.options = ['Falar com um humano', 'Voltar ao menu'];
-      return response;
-    }
+        const msg = completion.choices[0].message;
+        
+        if (msg.tool_calls && msg.tool_calls.length > 0) {
+          toolCalled = msg.tool_calls[0].function.name;
+          toolArgs = JSON.parse(msg.tool_calls[0].function.arguments || '{}');
+        } else if (msg.content && msg.content.includes('<function=')) {
+          // Llama 3.1 fallback parser se o Groq vazar a sintaxe da tool no content
+          const functionMatch = msg.content.match(/<function=([^>]+)>(.*?)<\/function>/s);
+          if (functionMatch) {
+             toolCalled = functionMatch[1];
+             try {
+                toolArgs = JSON.parse(functionMatch[2]);
+             } catch(e) { toolArgs = {}; }
+             // Pega o texto que sobrou fora da tag e injeta como messageToUser
+             const leftoverText = msg.content.replace(functionMatch[0], '').trim();
+             if (leftoverText && !toolArgs.messageToUser) {
+                 toolArgs.messageToUser = leftoverText;
+             }
+          } else {
+             aiResponseText = msg.content;
+          }
+        } else {
+          aiResponseText = msg.content;
+        }
 
-    // 4. View Catalog / Recommendations
-    if (lowerMessage.includes('catálogo') || lowerMessage.includes('comprar') || lowerMessage.includes('tênis') || lowerMessage.includes('produtos')) {
-      response.text = 'Temos várias opções incríveis! Você tem preferência por alguma marca? Trabalhamos com Nike, Adidas, Puma, Reebok e Vans.';
-      response.options = ['Nike', 'Adidas', 'Puma', 'Reebok', 'Vans', 'Ver todos'];
-      return response;
-    }
+      } catch (groqError) {
+        console.warn('Groq falhou, fazendo fallback para Gemini...', groqError);
+        // Fallback pro Gemini se Groq falhar
+        const { GoogleGenerativeAI } = require('@google/generative-ai');
+        const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+        const model = genAI.getGenerativeModel({
+          model: "gemini-1.5-flash",
+          tools: SalesAgent.getGeminiTools(),
+        });
+        
+        const chat = model.startChat({
+          history: messages.slice(0, -1).map(m => ({
+            role: m.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: m.content }]
+          }))
+        });
+        
+        const result = await chat.sendMessage(messages[messages.length - 1].content);
+        
+        const functionCalls = result.response.functionCalls();
+        if (functionCalls && functionCalls.length > 0) {
+          toolCalled = functionCalls[0].name;
+          toolArgs = functionCalls[0].args;
+        } else {
+          aiResponseText = result.response.text();
+        }
+      }
 
-    // 5. Fallback / Unrecognized Intent
-    response.text = 'Desculpe, não entendi muito bem. Você gostaria de ver nossos produtos ou falar com um de nossos consultores humanos?';
-    response.options = ['Ver catálogo', 'Falar com um humano'];
-    return response;
+      // Executa a lógica baseada na Tool chamada
+      if (toolCalled) {
+        if (toolCalled === 'lookupCustomer') {
+          const customer = await customerRepository.findByTelefoneOrEmail(toolArgs.identifier);
+          if (customer) {
+            context.customerName = customer.name;
+            context.customerAddress = customer.address;
+            context.customerIdentifier = customer.telefone || customer.email || toolArgs.identifier;
+            finalResponse.text = `Bem-vindo de volta, ${customer.name}! O que você gostaria de pedir hoje?`;
+          } else {
+            finalResponse.action = 'SHOW_REGISTER_FORM';
+            finalResponse.text = "Ainda não encontrei seu cadastro no nosso sistema. Por favor, preencha o formulário rápido abaixo para iniciarmos seu pedido:";
+          }
+        }
+        else if (toolCalled === 'requestCustomerRegistration') {
+          finalResponse.action = 'SHOW_REGISTER_FORM';
+          finalResponse.text = "Preciso de alguns dados para finalizar seu cadastro e enviar seu pedido corretamente. Por favor, preencha o formulário abaixo:";
+        } 
+        else if (toolCalled === 'showProductMenu') {
+          const validDisplayIds = (toolArgs.productIds || []).filter(id => !context.cart[id]);
+          if (validDisplayIds.length > 0) {
+            finalResponse.products = inventory.filter(p => validDisplayIds.includes(p.id));
+          }
+          finalResponse.text = toolArgs.messageToUser || "Aqui estão as opções que encontrei para você. Gostaria de pedir alguma?";
+        }
+        else if (toolCalled === 'addToCart') {
+          context.isConfirmingOrder = false;
+          if (toolArgs.productId && toolArgs.quantity) {
+             if (!context.cart[toolArgs.productId]) context.cart[toolArgs.productId] = 0;
+             context.cart[toolArgs.productId] += Number(toolArgs.quantity);
+             context.pendingProduct = null;
+             
+             let msg = toolArgs.messageToUser || `Adicionado ao carrinho com sucesso!`;
+             if (!msg.includes('?')) {
+               msg += " Deseja mais alguma coisa?";
+             }
+             finalResponse.text = msg;
+          }
+        }
+        else if (toolCalled === 'removeFromCart') {
+          context.isConfirmingOrder = false;
+          if (toolArgs.productId && context.cart[toolArgs.productId]) {
+            context.cart[toolArgs.productId] -= Number(toolArgs.quantity || 1);
+            if (context.cart[toolArgs.productId] <= 0) delete context.cart[toolArgs.productId];
+            finalResponse.text = toolArgs.messageToUser || "Item removido do carrinho. Deseja mais algo?";
+          }
+        }
+        else if (toolCalled === 'updateCustomerAddress') {
+          await customerRepository.updateAddress(context.customerIdentifier, toolArgs.newAddress);
+          context.customerAddress = toolArgs.newAddress;
+          finalResponse.text = "Endereço atualizado com sucesso!";
+        }
+        else if (toolCalled === 'requestCheckout') {
+          if (!context.customerName) {
+            finalResponse.action = 'SHOW_REGISTER_FORM';
+            finalResponse.text = "Antes de fechar o pedido, preciso dos seus dados de entrega. Por favor, preencha o formulário:";
+          } else {
+            let total = 0;
+            let cartItems = [];
+            for (const [id, qty] of Object.entries(context.cart)) {
+              const p = inventory.find(i => i.id === id);
+              if (p) {
+                total += p.price * qty;
+                cartItems.push(`${qty}x ${p.name}`);
+              }
+            }
+            
+            if (context.isConfirmingAddress) {
+              finalResponse.text = `Perfeito, ${context.customerName}! Seu pedido foi confirmado e será entregue em breve no endereço:\n${context.customerAddress}\n\nEstamos enviando para a cozinha!`;
+              finalResponse.action = 'CREATE_ORDER';
+              context.cart = {}; // limpa o carrinho
+              context.isConfirmingOrder = false;
+              context.isConfirmingAddress = false;
+              context.hasCrossSeled = false;
+            } else if (context.isConfirmingOrder) {
+              finalResponse.text = `Ótimo! O endereço de entrega cadastrado é:\n${context.customerAddress}\n\nEstá correto ou deseja alterar?`;
+              context.isConfirmingAddress = true;
+            } else {
+              // Se tivermos cross-sell para fazer, fazemos antes de confirmar o resumo
+              if (!context.hasCrossSeled) {
+                finalResponse.text = `${toolArgs.messageToUser || 'Gostaria de adicionar algo mais para acompanhar?'}`;
+                context.hasCrossSeled = true;
+                if (toolArgs.suggestedProductId) {
+                  const suggested = inventory.find(i => i.id === toolArgs.suggestedProductId);
+                  if (suggested) {
+                    finalResponse.products = [suggested];
+                  }
+                }
+              } else {
+                finalResponse.text = `Aqui está o resumo do seu pedido:\n${cartItems.join('\n')}\nTotal: R$ ${total.toFixed(2)}.\n\nTudo certo para enviarmos para a cozinha?`;
+                context.isConfirmingOrder = true;
+              }
+            }
+          }
+        }
+        
+        aiResponseText = finalResponse.text; // Salva para o histórico o que geramos via tool
+      } else {
+        finalResponse.text = aiResponseText;
+      }
+
+      // Adiciona botões auxiliares na interface
+      finalResponse.options = [];
+      if (finalResponse.action !== 'CREATE_ORDER' && finalResponse.action !== 'SHOW_REGISTER_FORM') {
+        
+        const lowerText = finalResponse.text.toLowerCase();
+
+        // Se estamos no fluxo de fechamento (cross-sell, resumo do pedido ou endereço)
+        if (context.isConfirmingOrder || context.isConfirmingAddress || (context.hasCrossSeled && (lowerText.includes('acompanhar') || lowerText.includes('adicionar')))) {
+          finalResponse.options = ["Sim", "Não", "Ver cardápio"];
+        } else {
+          if (lowerText.includes('?') && (lowerText.includes('algo mais') || lowerText.includes('alguma coisa'))) {
+            // Quando o bot pergunta se quer algo mais, oferecemos navegação rápida
+            finalResponse.options.push("Ver cardápio", "Salgados", "Doces", "Bebidas");
+          } 
+          
+          const isAskingQuantity = lowerText.includes('quantidade') || lowerText.includes('quantas') || lowerText.includes('quantos');
+          
+          if (context.customerName && !isAskingQuantity && !finalResponse.options.includes("Ver cardápio")) {
+             finalResponse.options.push("Ver cardápio", "Salgados", "Doces", "Bebidas");
+          }
+          
+          if (Object.keys(context.cart).length > 0) {
+            finalResponse.options.push("Fechar Pedido");
+          }
+        }
+      }
+
+      // Atualiza o histórico apenas se não for a mensagem oculta do formulário
+      if (!message.startsWith('[DADOS_DO_FORMULARIO]:')) {
+        context.history.push({ role: 'user', text: message });
+      } else {
+        context.history.push({ role: 'user', text: "Preenchi meus dados de cadastro." });
+      }
+      context.history.push({ role: 'assistant', text: aiResponseText });
+
+      finalResponse.context = context;
+      return finalResponse;
+
+    } catch (error) {
+      console.error('AI Error:', error);
+      return {
+        text: 'Desculpe, meus circuitos estão temporariamente em manutenção. Deseja ir para o nosso site?',
+        options: ['Ir para o site', 'Tentar novamente'],
+        products: [],
+        redirectToSite: true,
+        action: null,
+        context
+      };
+    }
   }
 }
 

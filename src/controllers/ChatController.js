@@ -3,8 +3,17 @@ const chatService = require('../services/ChatService');
 class ChatController {
   async handleMessage(req, res) {
     try {
-      const { message, context } = req.body;
+      let { message, context } = req.body;
       
+      if (typeof context === 'string') {
+        try {
+          context = context ? JSON.parse(context) : {};
+        } catch (e) {
+          console.error('Erro ao fazer parse do context:', e);
+          context = {};
+        }
+      }
+
       if (!message) {
         return res.status(400).json({ error: 'Mensagem é obrigatória' });
       }
