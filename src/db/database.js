@@ -41,6 +41,16 @@ function initDb() {
         details TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       );
+
+      CREATE TABLE IF NOT EXISTS dashboard_data (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        protocol TEXT NOT NULL,
+        chat_time_seconds INTEGER NOT NULL,
+        evaluation INTEGER NOT NULL,
+        handoff INTEGER NOT NULL DEFAULT 0,
+        conversion INTEGER NOT NULL DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
     `);
 
     // Inserir dados de teste (Mock)
@@ -58,6 +68,21 @@ function initDb() {
         const insertOrder = db.prepare(`INSERT INTO orders (customer_id, total, status, address) VALUES (?, ?, ?, ?)`);
         insertOrder.run(3, 150.00, 'Em preparo', 'Rua C, 789');
         insertOrder.finalize();
+
+        // Mock dashboard data
+        const checkDash = `SELECT COUNT(*) AS count FROM dashboard_data`;
+        db.get(checkDash, (errDash, rowDash) => {
+          if (!errDash && rowDash.count === 0) {
+            console.log('Populando banco com dados de dashboard mockados...');
+            const insertDash = db.prepare(`INSERT INTO dashboard_data (protocol, chat_time_seconds, evaluation, handoff, conversion) VALUES (?, ?, ?, ?, ?)`);
+            insertDash.run('PRT-2026-001', 45, 5, 0, 1);
+            insertDash.run('PRT-2026-002', 120, 4, 0, 1);
+            insertDash.run('PRT-2026-003', 300, 3, 1, 0);
+            insertDash.run('PRT-2026-004', 65, 5, 0, 0);
+            insertDash.run('PRT-2026-005', 90, 5, 0, 1);
+            insertDash.finalize();
+          }
+        });
       }
     });
   });

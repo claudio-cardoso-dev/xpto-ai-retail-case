@@ -156,4 +156,56 @@ router.put('/customers/:id', authMiddleware, customerController.update.bind(cust
  */
 router.delete('/customers/:id', authMiddleware, customerController.delete.bind(customerController));
 
+const dashboardDataController = require('../controllers/DashboardDataController');
+
+/**
+ * @swagger
+ * /api/dashboard-data/kpis:
+ *   get:
+ *     summary: Obtem os KPIs calculados
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/dashboard-data/kpis', dashboardDataController.getKPIs.bind(dashboardDataController));
+
+/**
+ * @swagger
+ * /api/dashboard-data:
+ *   get:
+ *     summary: Lista todos os dados de dashboard
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/dashboard-data', authMiddleware, dashboardDataController.getAll.bind(dashboardDataController));
+
+/**
+ * @swagger
+ * /api/dashboard-data:
+ *   post:
+ *     summary: Cria um novo dado de dashboard
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/dashboard-data', authMiddleware, dashboardDataController.create.bind(dashboardDataController));
+
+/**
+ * @swagger
+ * /api/dashboard-data/{id}:
+ *   put:
+ *     summary: Atualiza um dado de dashboard
+ *     security:
+ *       - bearerAuth: []
+ */
+router.put('/dashboard-data/:id', authMiddleware, dashboardDataController.update.bind(dashboardDataController));
+
+/**
+ * @swagger
+ * /api/dashboard-data/{id}:
+ *   delete:
+ *     summary: Exclui um dado de dashboard
+ *     security:
+ *       - bearerAuth: []
+ */
+router.delete('/dashboard-data/:id', authMiddleware, dashboardDataController.delete.bind(dashboardDataController));
+
 module.exports = router;
