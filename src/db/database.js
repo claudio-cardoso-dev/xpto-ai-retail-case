@@ -14,7 +14,7 @@ const db = new sqlite3.Database(dbPath, (err) => {
 
 function initDb() {
   db.serialize(() => {
-    db.run(`
+    db.exec(`
       CREATE TABLE IF NOT EXISTS customers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,

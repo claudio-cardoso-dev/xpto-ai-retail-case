@@ -12,6 +12,7 @@ class ChatService {
     // 1. Inicializa estado
     if (!context.protocolId) {
       context.protocolId = `XPTO-${new Date().getFullYear()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
+      context.startTime = Date.now();
     }
     if (!context.cart) context.cart = {}; 
     if (!context.hasCrossSeled) context.hasCrossSeled = false;
@@ -31,7 +32,7 @@ class ChatService {
       try {
         const formData = JSON.parse(message.replace('[DADOS_DO_FORMULARIO]:', '').trim());
         context.customerName = formData.name;
-        context.customerAddress = `${formData.cep} - ${formData.number}`;
+        context.customerAddress = `${formData.street}, ${formData.number} ${formData.complement || ''} - ${formData.neighborhood}, ${formData.city} - ${formData.cep}`;
         
         await customerRepository.createCustomer({
           name: formData.name,
@@ -41,7 +42,7 @@ class ChatService {
         });
         context.customerIdentifier = formData.phone || formData.email;
         
-        systemInjectedMessage = `[AÇÃO DO SISTEMA]: O cliente preencheu o formulário de cadastro com sucesso. O nome dele é ${formData.name}. Agradeça e pergunte o que ele deseja pedir hoje. Não chame requestCustomerRegistration novamente.`;
+        systemInjectedMessage = `[AÇÃO DO SISTEMA]: O cliente preencheu o formulário de cadastro com sucesso. O nome dele é ${formData.name}. Agradeça e pergunte o que ele deseja pedir hoje. Não peça mais dados de endereço.`;
       } catch (e) {
         console.error("Erro ao parsear formulário", e);
       }
@@ -49,6 +50,34 @@ class ChatService {
        const productName = message.replace(/Quero pedir:/i, '').trim();
        context.pendingProduct = productName;
        systemInjectedMessage = `[AÇÃO DO SISTEMA]: O cliente clicou no botão para comprar o produto "${productName}". Apenas pergunte: "Quantas unidades você deseja?".`;
+    } else if (message.toLowerCase() === 'cadastrar') {
+       return {
+         text: "Perfeito! Por favor, preencha o formulário abaixo para agilizarmos:",
+         action: 'SHOW_REGISTER_FORM',
+         options: [],
+         products: [],
+         redirectToSite: false,
+         context: context
+       };
+    } else if (message.toLowerCase() === 'ir para o site') {
+       try {
+         const timeSpent = Math.floor((Date.now() - (context.startTime || Date.now())) / 1000) || 30;
+         const DashboardDataRepository = require('../repositories/DashboardDataRepository');
+         await DashboardDataRepository.create({
+           protocol: context.protocolId,
+           chat_time_seconds: timeSpent,
+           evaluation: 3,
+           handoff: true,
+           conversion: false
+         });
+       } catch(e) {}
+       return {
+         text: "Redirecionando para o site oficial...",
+         redirectToSite: true,
+         options: [],
+         products: [],
+         context: context
+       };
     }
 
     const systemPrompt = SalesAgent.getSystemPrompt(context, inventoryMin);
@@ -80,27 +109,48 @@ class ChatService {
       let toolArgs = {};
 
       try {
-        // Tenta usar Groq com Llama-3.1 (suporta Tool Calling perfeitamente)
-        const completion = await groq.chat.completions.create({
-          messages: messages,
-          model: 'llama-3.1-8b-instant',
-          tools: SalesAgent.getGroqTools(),
-          tool_choice: "auto",
-          temperature: 0.2,
-        });
+        let groqSuccess = false;
+        let msg = null;
+        
+        // Modelos Groq com suporte a Tool Calling, em ordem de prioridade
+        const groqModels = [
+          'llama-3.3-70b-versatile', 
+          'llama-3.1-8b-instant', 
+          'llama-3.1-70b-versatile',
+          'llama3-70b-8192'
+        ];
+        
+        for (const modelName of groqModels) {
+          try {
+            const completion = await groq.chat.completions.create({
+              messages: messages,
+              model: modelName,
+              tools: SalesAgent.getGroqTools(),
+              tool_choice: "auto",
+              temperature: 0.2,
+            });
+            msg = completion.choices[0].message;
+            groqSuccess = true;
+            break; // Sai do loop em caso de sucesso
+          } catch (modelError) {
+            console.warn(`[Groq Fallback]: Falhou com o modelo ${modelName}, tentando próximo...`);
+          }
+        }
 
-        const msg = completion.choices[0].message;
+        if (!groqSuccess || !msg) {
+          throw new Error("Todos os modelos do Groq falharam por limite ou timeout.");
+        }
         
         if (msg.tool_calls && msg.tool_calls.length > 0) {
           toolCalled = msg.tool_calls[0].function.name;
           toolArgs = JSON.parse(msg.tool_calls[0].function.arguments || '{}');
-        } else if (msg.content && msg.content.includes('<function=')) {
+        } else if (msg.content && (msg.content.includes('<function=') || msg.content.includes('function='))) {
           // Llama 3.1 fallback parser se o Groq vazar a sintaxe da tool no content
-          const functionMatch = msg.content.match(/<function=([^>]+)>(.*?)<\/function>/s);
+          const functionMatch = msg.content.match(/<?function=([^>]+)>(.*?)(?:<\/function>|$)/s);
           if (functionMatch) {
-             toolCalled = functionMatch[1];
+             toolCalled = functionMatch[1].trim();
              try {
-                toolArgs = JSON.parse(functionMatch[2]);
+                toolArgs = JSON.parse(functionMatch[2].trim());
              } catch(e) { toolArgs = {}; }
              // Pega o texto que sobrou fora da tag e injeta como messageToUser
              const leftoverText = msg.content.replace(functionMatch[0], '').trim();
@@ -110,6 +160,18 @@ class ChatService {
           } else {
              aiResponseText = msg.content;
           }
+        } else if (msg.content && msg.content.includes('<tool_call>')) {
+           // Outro formato comum do Llama 3.1
+           const toolMatch = msg.content.match(/<tool_call>(.*?)<\/tool_call>/s);
+           if (toolMatch) {
+              try {
+                 const parsed = JSON.parse(toolMatch[1]);
+                 toolCalled = parsed.name;
+                 toolArgs = parsed.arguments;
+              } catch(e) {}
+           } else {
+             aiResponseText = msg.content;
+           }
         } else {
           aiResponseText = msg.content;
         }
@@ -120,7 +182,7 @@ class ChatService {
         const { GoogleGenerativeAI } = require('@google/generative-ai');
         const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
         const model = genAI.getGenerativeModel({
-          model: "gemini-1.5-flash",
+          model: "gemini-1.5-flash-latest",
           tools: SalesAgent.getGeminiTools(),
         });
         
@@ -152,16 +214,42 @@ class ChatService {
             context.customerAddress = customer.address;
             context.customerProfile = customer.profile;
             context.customerIdentifier = customer.telefone || customer.email || toolArgs.identifier;
-            finalResponse.text = `Bem-vindo de volta, ${customer.name}! Identifiquei seu cadastro.`;
+            finalResponse.text = `Bem-vindo de volta, ${customer.name}! Identifiquei seu cadastro. O que você gostaria de pedir hoje?`;
           } else {
-            finalResponse.action = 'SHOW_REGISTER_FORM';
-            finalResponse.text = "Ainda não encontrei seu cadastro no nosso sistema. Por favor, preencha o formulário rápido abaixo para iniciarmos seu pedido:";
+            finalResponse.options = ["Cadastrar"];
+            finalResponse.text = "Ainda não encontrei seu cadastro no nosso sistema. Por favor, me informe seu nome completo para iniciarmos, ou clique em Cadastrar para preencher o formulário rápido:";
           }
         }
         else if (toolCalled === 'requestCustomerRegistration') {
           finalResponse.action = 'SHOW_REGISTER_FORM';
           finalResponse.text = "Preciso de alguns dados para finalizar seu cadastro e enviar seu pedido corretamente. Por favor, preencha o formulário abaixo:";
-        } 
+        }
+        else if (toolCalled === 'validateCEP') {
+          try {
+            const cepResponse = await fetch(`https://viacep.com.br/ws/${toolArgs.cep.replace(/\\D/g, '')}/json/`);
+            const cepData = await cepResponse.json();
+            if (cepData.erro) {
+               finalResponse.text = "Ops, não consegui encontrar esse CEP. Pode verificar e digitar novamente?";
+            } else {
+               finalResponse.text = `Encontrei: ${cepData.logradouro}, ${cepData.bairro}, ${cepData.localidade}. Qual o número da residência (e complemento se houver)?`;
+            }
+          } catch (e) {
+             finalResponse.text = "Tive um problema ao consultar o CEP. Qual o nome da sua rua, bairro e cidade?";
+          }
+        }
+        else if (toolCalled === 'completeRegistration') {
+           const fullAddress = `${toolArgs.street}, ${toolArgs.number} - ${toolArgs.neighborhood}, ${toolArgs.city} - ${toolArgs.cep}`;
+           await customerRepository.createCustomer({
+             name: toolArgs.name,
+             email: toolArgs.email,
+             telefone: toolArgs.phone,
+             address: fullAddress
+           });
+           context.customerName = toolArgs.name;
+           context.customerAddress = fullAddress;
+           context.customerIdentifier = toolArgs.phone || toolArgs.email;
+           finalResponse.text = `Cadastro concluído com sucesso, ${toolArgs.name}! O que você gostaria de pedir hoje?`;
+        }
         else if (toolCalled === 'showProductMenu') {
           const validDisplayIds = (toolArgs.productIds || []).filter(id => !context.cart[id]);
           if (validDisplayIds.length > 0) {
@@ -170,18 +258,34 @@ class ChatService {
           finalResponse.text = toolArgs.messageToUser || "Aqui estão as opções que encontrei para você. Gostaria de pedir alguma?";
         }
         else if (toolCalled === 'addToCart') {
-          context.isConfirmingOrder = false;
-          if (toolArgs.productId && toolArgs.quantity) {
-             if (!context.cart[toolArgs.productId]) context.cart[toolArgs.productId] = 0;
-             context.cart[toolArgs.productId] += Number(toolArgs.quantity);
-             context.pendingProduct = null;
-             
-             let msg = toolArgs.messageToUser || `Adicionado ao carrinho com sucesso!`;
-             if (!msg.includes('?')) {
-               msg += " Deseja mais alguma coisa?";
-             }
-             finalResponse.text = msg;
-          }
+           context.isConfirmingOrder = false;
+           if (toolArgs.productId && toolArgs.quantity) {
+              if (!context.cart[toolArgs.productId]) context.cart[toolArgs.productId] = 0;
+              context.cart[toolArgs.productId] += Number(toolArgs.quantity);
+              context.pendingProduct = null;
+              
+              if (context.hasCrossSeled) {
+                 // Estávamos no meio do fechamento, usuário aceitou o cross-sell e adicionou
+                 let total = 0;
+                 let cartItems = [];
+                 for (const [id, qty] of Object.entries(context.cart)) {
+                   const p = inventory.find(i => i.id === id);
+                   if (p) {
+                     total += p.price * qty;
+                     cartItems.push(`${qty}x ${p.name}`);
+                   }
+                 }
+                 let formattedCart = cartItems.map(item => `• ${item}`).join('\n');
+                 finalResponse.text = `Adicionado! Aqui está o resumo atualizado do seu pedido:\n\n${formattedCart}\n\n💰 Total: R$ ${total.toFixed(2)}\n\nTudo certo para prosseguirmos?`;
+                 context.isConfirmingOrder = true;
+              } else {
+                 let msg = toolArgs.messageToUser || `Adicionado ao carrinho com sucesso!`;
+                 if (!msg.includes('?')) {
+                   msg += " Deseja mais alguma coisa?";
+                 }
+                 finalResponse.text = msg;
+              }
+           }
         }
         else if (toolCalled === 'removeFromCart') {
           context.isConfirmingOrder = false;
@@ -212,14 +316,14 @@ class ChatService {
             }
             
             if (context.isConfirmingAddress) {
-              finalResponse.text = `Perfeito, ${context.customerName}! Seu pedido foi confirmado e será entregue em breve no endereço:\n${context.customerAddress}\n\nEstamos enviando para a cozinha!`;
+              finalResponse.text = `Perfeito, ${context.customerName}! Seu pedido foi confirmado e será entregue em breve no endereço:\n📍 ${context.customerAddress}\n\nEstamos enviando para a cozinha!`;
               finalResponse.action = 'CREATE_ORDER';
               context.cart = {}; // limpa o carrinho
               context.isConfirmingOrder = false;
               context.isConfirmingAddress = false;
               context.hasCrossSeled = false;
             } else if (context.isConfirmingOrder) {
-              finalResponse.text = `Ótimo! O endereço de entrega cadastrado é:\n${context.customerAddress}\n\nEstá correto ou deseja alterar?`;
+              finalResponse.text = `Ótimo! O endereço de entrega cadastrado é:\n📍 ${context.customerAddress}\n\nEstá correto ou deseja alterar?`;
               context.isConfirmingAddress = true;
             } else {
               // Se tivermos cross-sell para fazer, fazemos antes de confirmar o resumo
@@ -233,7 +337,8 @@ class ChatService {
                   }
                 }
               } else {
-                finalResponse.text = `Aqui está o resumo do seu pedido:\n${cartItems.join('\n')}\nTotal: R$ ${total.toFixed(2)}.\n\nTudo certo para enviarmos para a cozinha?`;
+                let formattedCart = cartItems.map(item => `• ${item}`).join('\n');
+                finalResponse.text = `Aqui está o resumo do seu pedido:\n\n${formattedCart}\n\n💰 Total: R$ ${total.toFixed(2)}\n\nTudo certo para prosseguirmos?`;
                 context.isConfirmingOrder = true;
               }
             }
@@ -264,6 +369,18 @@ class ChatService {
           context.isEvaluating = false;
           finalResponse.text = "Muito obrigado pela sua avaliação! Seu feedback é muito importante para nós. Tenha um ótimo dia!";
           finalResponse.options = [];
+          
+          try {
+            const timeSpent = Math.floor((Date.now() - (context.startTime || Date.now())) / 1000) || 60;
+            const DashboardDataRepository = require('../repositories/DashboardDataRepository');
+            await DashboardDataRepository.create({
+              protocol: context.protocolId,
+              chat_time_seconds: timeSpent,
+              evaluation: toolArgs.rating || 5,
+              handoff: false,
+              conversion: true // reached feedback -> completed flow
+            });
+          } catch(e) { console.error('Erro ao salvar metrica', e); }
         }
         
         aiResponseText = finalResponse.text; // Salva para o histórico o que geramos via tool
