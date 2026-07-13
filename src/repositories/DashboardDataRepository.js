@@ -14,8 +14,19 @@ class DashboardDataRepository {
     });
   }
 
-  getKPIs() {
+  getKPIs(period) {
     return new Promise((resolve, reject) => {
+      let dateFilter = '';
+      if (period === 'dia') {
+        dateFilter = `WHERE created_at >= datetime('now', '-1 day')`;
+      } else if (period === 'semana') {
+        dateFilter = `WHERE created_at >= datetime('now', '-7 days')`;
+      } else if (period === 'mes') {
+        dateFilter = `WHERE created_at >= datetime('now', '-30 days')`;
+      } else if (period === 'ano') {
+        dateFilter = `WHERE created_at >= datetime('now', '-365 days')`;
+      }
+      
       const query = `
         SELECT 
           COUNT(*) as total_chats,
@@ -24,6 +35,7 @@ class DashboardDataRepository {
           AVG(chat_time_seconds) as avg_time_seconds,
           AVG(evaluation) as avg_csat
         FROM dashboard_data
+        ${dateFilter}
       `;
       db.get(query, [], (err, row) => {
         if (err) {

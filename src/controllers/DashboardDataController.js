@@ -13,7 +13,7 @@ class DashboardDataController {
 
   async getKPIs(req, res) {
     try {
-      const stats = await repo.getKPIs();
+      const stats = await repo.getKPIs(req.query.period);
       
       const total = stats.total_chats || 0;
       const conversionRate = total > 0 ? (stats.total_conversions / total) * 100 : 0;
