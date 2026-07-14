@@ -137,7 +137,7 @@ class ChatService {
               failureCount: 0
             });
             finalResponse.text = `Bem-vindo de volta, ${customer.name}! Identifiquei seu cadastro. O que você gostaria de pedir hoje ou deseja acompanhar seu pedido?`;
-            finalResponse.options = ["Comprar", "Acompanhar Pedido"];
+            finalResponse.options = ["Cardápio", "Acompanhar Pedido"];
           } else {
             context.flowState = 'REGISTRATION';
             context.failureCount = 0;
@@ -410,10 +410,12 @@ class ChatService {
     // Processamento Final de Resposta
     if (!finalResponse.options) finalResponse.options = [];
     if (!['CREATE_ORDER', 'SHOW_REGISTER_FORM'].includes(finalResponse.action) && context.flowState !== 'METRICS_CSAT') {
-      if (context.isConfirmingOrder || context.isConfirmingAddress) {
+      if (context.isConfirmingAddress) {
+        finalResponse.options = ["Tudo Certo", "Desejo Alterar"];
+      } else if (context.isConfirmingOrder) {
         finalResponse.options = ["Sim", "Não", "Ver cardápio"];
       } else if (context.flowState === 'SHOPPING_CROSS_SELL' && Object.keys(context.cart).length > 0) {
-        finalResponse.options.push("Fechar Pedido");
+        finalResponse.options.push("Cardápio", "Salgados", "Doces", "Bebidas", "Fechar Pedido");
       }
     }
 
