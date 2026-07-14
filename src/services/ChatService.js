@@ -196,7 +196,7 @@ class ChatService {
       case 'ORDER_TRACKING':
       case 'SHOPPING_CROSS_SELL':
       case 'CHECKOUT_RETENTION':
-        const isSimpleReply = /^(sim|não|nao|fechar pedido|ok|certo|correto|alterar|tudo certo|desejo alterar)$/i.test(message.trim());
+        const isSimpleReply = /^(sim|não|nao|fechar pedido|ok|certo|correto|alterar|tudo certo|desejo alterar)$/i.test(message.trim()) || !!context.pendingProduct;
         let nluResult = { intent: 'UNKNOWN', confidence: 1 };
         
         // Economiza tokens e evita Rate Limits do LLM ignorando o NLU para respostas óbvias
@@ -205,6 +205,22 @@ class ChatService {
         }
 
         if ((nluResult.intent === 'UNKNOWN' || nluResult.confidence < 0.6) && !isSimpleReply && !context.isConfirmingOrder && !context.isConfirmingAddress) {
+          
+          // Tentar indicar produtos com base na entidade
+          const ragResults = await InventoryRAG.search(message, 1);
+          if (ragResults && ragResults.length > 0 && ragResults[0].id) {
+            const suggested = ragResults[0];
+            finalResponse.products = [suggested];
+            finalResponse.text = `Você está procurando por ${suggested.name}?`;
+            context.flowState = 'SHOPPING_CROSS_SELL';
+            context.failureCount = 0;
+            
+            context.history.push({ role: 'user', text: message });
+            context.history.push({ role: 'assistant', text: finalResponse.text });
+            finalResponse.context = context;
+            return finalResponse;
+          }
+
           context.failureCount++;
           this._logMetricBackground(FailedIntentRepository.save(context.protocolId, message, context.flowState));
 
@@ -212,6 +228,12 @@ class ChatService {
             finalResponse.text = "Não estou conseguindo compreender. Vou te direcionar para o site para você ser melhor atendido.";
             finalResponse.options = ['Ir para o site'];
             finalResponse.redirectToSite = true;
+            return finalResponse;
+          } else {
+            finalResponse.text = "Desculpe, não consegui identificar qual produto ou a quantidade desejada. Poderia repetir?";
+            context.history.push({ role: 'user', text: message });
+            context.history.push({ role: 'assistant', text: finalResponse.text });
+            finalResponse.context = context;
             return finalResponse;
           }
         } else {
@@ -401,6 +423,9 @@ class ChatService {
             else if (toolCalled === 'addToCart') {
               context.isConfirmingOrder = false;
               let rawRef = toolArgs.productId || toolArgs.id || toolArgs.name || toolArgs.product;
+              if (!rawRef && toolArgs.productIds) {
+                rawRef = Array.isArray(toolArgs.productIds) ? toolArgs.productIds[0] : toolArgs.productIds;
+              }
               let productId = null;
 
               if (rawRef) {
@@ -414,8 +439,9 @@ class ChatService {
                 if (found) productId = found.id;
               }
 
-              if (productId && toolArgs.quantity) {
-                context.cart[productId] = (context.cart[productId] || 0) + Number(toolArgs.quantity);
+              if (productId) {
+                const qty = toolArgs.quantity || 1;
+                context.cart[productId] = (context.cart[productId] || 0) + Number(qty);
                 context.pendingProduct = null;
 
                 if (context.hasCrossSeled) {
