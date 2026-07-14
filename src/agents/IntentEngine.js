@@ -13,7 +13,7 @@ class IntentEngine {
 
     const primaryLlm = new ChatGroq({
       apiKey: process.env.GROQ_API_KEY,
-      model: "llama-3.3-70b-versatile", // Usar um modelo melhorzinho para NLP, ou manter 3.1
+      model: "qwen/qwen3-32b", // Usar um modelo melhorzinho para NLP, ou manter 3.1
       temperature: 0.1,
       maxRetries: 0,
     });

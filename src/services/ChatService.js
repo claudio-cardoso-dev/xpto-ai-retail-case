@@ -16,7 +16,7 @@ class ChatService {
     // Inicialização otimizada dos modelos
     this.primaryLlm = new ChatGroq({
       apiKey: process.env.GROQ_API_KEY,
-      model: "llama-3.3-70b-versatile",
+      model: "qwen/qwen3-32b",
       temperature: 0.1,
       maxRetries: 0,
     });
@@ -109,6 +109,37 @@ class ChatService {
       const productName = message.replace(/Quero pedir:/i, '').trim();
       context.pendingProduct = productName;
       systemInjectedMessage = `[AÇÃO DO SISTEMA]: O cliente clicou no botão para comprar o produto "${productName}". Apenas pergunte: "Quantas unidades você deseja?".`;
+    }
+
+    // --- MENU BYPASS (Save Tokens) ---
+    const menuCategories = {
+      'cardápio': '',
+      'cardapio': '',
+      'salgados': 'salgado',
+      'salgado': 'salgado',
+      'doces': 'doce',
+      'doce': 'doce',
+      'bebidas': 'bebida',
+      'bebida': 'bebida'
+    };
+
+    if (menuCategories[msgLower] !== undefined) {
+      const categoryFilter = menuCategories[msgLower];
+      const fullInventory = await inventoryRepository.getAll();
+      
+      if (categoryFilter) {
+        finalResponse.products = fullInventory.filter(p => (p.category || '').toLowerCase().includes(categoryFilter));
+        finalResponse.text = `Aqui estão as opções de ${msgLower}:`;
+      } else {
+        finalResponse.products = fullInventory;
+        finalResponse.text = "Aqui está o nosso cardápio completo:";
+      }
+      
+      context.flowState = 'SHOPPING_CROSS_SELL';
+      context.history.push({ role: 'user', text: message });
+      context.history.push({ role: 'assistant', text: finalResponse.text });
+      finalResponse.context = context;
+      return finalResponse;
     }
 
     // --- MÁQUINA DE ESTADOS (State Machine) ---
@@ -412,12 +443,44 @@ class ChatService {
                 // Tratado no bypass acima
               } else {
                 if (!context.hasCrossSeled) {
-                  finalResponse.text = toolArgs.messageToUser || 'Gostaria de adicionar algo mais para acompanhar?';
                   context.hasCrossSeled = true;
-                  if (toolArgs.suggestedProductId) {
-                    const suggested = fullInventory.find(i => i.id === toolArgs.suggestedProductId);
-                    if (suggested) finalResponse.products = [suggested];
+                  
+                  // Lógica de recomendação de Cross-sell baseada no carrinho
+                  const cartProductIds = Object.keys(context.cart).map(String);
+                  let targetCategory = null;
+                  
+                  // Analisa o carrinho para determinar o que oferecer
+                  for (const id of cartProductIds) {
+                    const p = fullInventory.find(i => String(i.id) === id);
+                    if (p) {
+                      const cat = (p.category || '').toLowerCase();
+                      const name = (p.name || '').toLowerCase();
+                      if (cat.includes('bebida')) {
+                        targetCategory = 'salgado';
+                        break; // Se tem bebida, oferecer salgado é prioridade
+                      } else if (cat.includes('salgado')) {
+                        targetCategory = 'doce';
+                      } else if (name.includes('pão') || name.includes('pao')) {
+                        targetCategory = 'doce';
+                      }
+                    }
                   }
+                  
+                  if (!targetCategory) targetCategory = 'doce'; // Default
+                  
+                  // Busca um produto da categoria alvo que NÃO está no carrinho
+                  const suggested = fullInventory.find(i => 
+                    !cartProductIds.includes(String(i.id)) && 
+                    (i.category || '').toLowerCase().includes(targetCategory)
+                  );
+                  
+                  if (suggested) {
+                    finalResponse.products = [suggested];
+                    finalResponse.text = toolArgs.messageToUser || `Para acompanhar, que tal experimentar nosso(a) ${suggested.name}?`;
+                  } else {
+                    finalResponse.text = toolArgs.messageToUser || 'Gostaria de adicionar algo mais para acompanhar?';
+                  }
+
                 } else {
                   finalResponse.text = `Resumo do pedido:\n\n${cartItems}\n\n💰 Total: R$ ${total.toFixed(2)}\n\nTudo certo para prosseguirmos?`;
                   context.isConfirmingOrder = true;
