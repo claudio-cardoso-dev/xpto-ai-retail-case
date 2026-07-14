@@ -1,29 +1,39 @@
+require('dotenv').config();
 const chatService = require('../src/services/ChatService');
-const inventoryRepository = require('../src/repositories/InventoryRepository');
+const customerRepository = require('../src/repositories/CustomerRepository');
 
-describe('ChatService Unit Tests', () => {
-  it('Should return a greeting when user says "Olá"', async () => {
+describe('ChatService Unit Tests (XPTO Padaria)', () => {
+  beforeEach(() => {
+    jest.spyOn(customerRepository, 'findByTelefoneOrEmail').mockImplementation(async (identifier) => {
+      if (identifier === '11945256750') {
+        return null; // Not registered
+      }
+      if (identifier === '11999999999') {
+        return { id: 1, name: 'Claudio', telefone: '11999999999' };
+      }
+      return null;
+    });
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('Should return a greeting and ask for identification when user says "Olá"', async () => {
     const response = await chatService.processMessage('Olá');
-    expect(response.text).toContain('Olá! Sou o assistente de vendas');
-    expect(response.options).toContain('Ver catálogo');
+    expect(response.text.toLowerCase()).toContain('olá');
+    // For padaria it should ask for phone/email if not logged in
+    expect(response.text.toLowerCase()).toContain('telefone ou e-mail');
   });
 
-  it('Should transfer to human when requested', async () => {
-    const response = await chatService.processMessage('quero falar com humano');
-    expect(response.transferToHuman).toBe(true);
-    expect(response.text).toContain('transferindo você para a nossa equipe');
+  it('Should offer registration when un unregistered phone is provided', async () => {
+    const response = await chatService.processMessage('11945256750');
+    expect(response.text.toLowerCase()).toContain('não encontrei seu cadastro');
+    expect(response.options).toContain('Cadastrar');
   });
 
-  it('Should return Nike products when user mentions "nike"', async () => {
-    const response = await chatService.processMessage('tênis da nike');
-    expect(response.products.length).toBeGreaterThan(0);
-    expect(response.products[0].brand.toLowerCase()).toBe('nike');
-    expect(response.text).toContain('Nike');
-  });
-
-  it('Should offer catalog options when intent is not specific', async () => {
-    const response = await chatService.processMessage('gostaria de comprar');
-    expect(response.options).toEqual(expect.arrayContaining(['Nike', 'Adidas']));
-    expect(response.products.length).toBe(0);
+  it('Should welcome the user if the phone is registered', async () => {
+    const response = await chatService.processMessage('11999999999');
+    expect(response.text.toLowerCase()).toContain('bem-vindo de volta, claudio');
   });
 });

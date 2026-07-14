@@ -1,285 +1,162 @@
-const customerRepository = require('../repositories/CustomerRepository');
-
-const toolsDefinition = [
-  {
-    name: "lookupCustomer",
-    description: "Busca o cliente no banco de dados. Use isso LOGO NO INÍCIO da conversa perguntando o telefone ou e-mail.",
-    parameters: {
-      type: "object",
-      properties: {
-        identifier: { type: "string" }
-      },
-      required: ["identifier"]
-    }
-  },
-  {
-    name: "requestCustomerRegistration",
-    description: "Solicita o formulário de cadastro.",
-    parameters: {
-      type: "object",
-      properties: {},
-      required: []
-    }
-  },
-  {
-    name: "addToCart",
-    description: "Adiciona um produto ao carrinho. OBRIGATÓRIO chamar esta tool para adicionar itens.",
-    parameters: {
-      type: "object",
-      properties: {
-        productId: { type: "string" },
-        quantity: { type: "integer" },
-        messageToUser: { type: "string", description: "O texto que você vai dizer confirmando a adição. PERGUNTE se ele quer algo a mais, mas NÃO ofereça produtos específicos (sem cross-sell)." }
-      },
-      required: ["productId", "quantity", "messageToUser"]
-    }
-  },
-  {
-    name: "removeFromCart",
-    description: "Remove um produto do carrinho.",
-    parameters: {
-      type: "object",
-      properties: {
-        productId: { type: "string" },
-        quantity: { type: "integer" },
-        messageToUser: { type: "string", description: "Texto de confirmação para o cliente." }
-      },
-      required: ["productId", "quantity", "messageToUser"]
-    }
-  },
-  {
-    name: "showProductMenu",
-    description: "Exibe cards de produtos na tela.",
-    parameters: {
-      type: "object",
-      properties: {
-        productIds: {
-          type: "array",
-          items: { type: "string" },
-          description: "IDs dos produtos encontrados no estoque que correspondam à busca (mesmo que parcial, ex: 'coxinha' mapeia para a coxinha disponível). Não inclua itens de outras categorias."
-        },
-        messageToUser: { type: "string", description: "Texto descrevendo os produtos exibidos." }
-      },
-      required: ["productIds", "messageToUser"]
-    }
-  },
-  {
-    name: "requestCheckout",
-    description: "Inicia o processo de fechamento de pedido. Use quando o cliente disser que não quer mais nada ou clicar em Fechar Pedido.",
-    parameters: {
-      type: "object",
-      properties: {
-        messageToUser: {
-          type: "string",
-          description: "Se 'Cross-sell oferecido' for false, preencha com o nome de UM produto específico do estoque para acompanhar o pedido (NUNCA use a palavra cross-sell com o cliente). Se já foi oferecido, pode deixar vazio ou agradecer."
-        },
-        suggestedProductId: {
-          type: "string",
-          description: "O ID do produto que você está sugerindo no cross-sell (ex: 'S1', 'D3'). OBRIGATÓRIO preencher se for a primeira vez fechando."
-        }
-      },
-      required: []
-    }
-  },
-  {
-    name: "updateCustomerAddress",
-    description: "Atualiza o endereço de entrega do cliente após ele solicitar a alteração na fase final do pedido.",
-    parameters: {
-      type: "object",
-      properties: {
-        newAddress: { type: "string" }
-      },
-      required: ["newAddress"]
-    }
-  },
-  {
-    name: "navigateToScreen",
-    description: "Redireciona o usuário para a tela específica do perfil escolhido (BTB ou BTC).",
-    parameters: {
-      type: "object",
-      properties: {
-        screen: { type: "string", description: "Qual tela abrir. Valores permitidos: 'btb' ou 'btc'." }
-      },
-      required: ["screen"]
-    }
-  },
-  {
-    name: "getOrderStatus",
-    description: "Consulta o status do último pedido do cliente.",
-    parameters: {
-      type: "object",
-      properties: {},
-      required: []
-    }
-  },
-  {
-    name: "triggerCustomerEvaluation",
-    description: "Inicia o fluxo de pesquisa de satisfação com o cliente.",
-    parameters: {
-      type: "object",
-      properties: {},
-      required: []
-    }
-  },
-  {
-    name: "validateCEP",
-    description: "Valida um CEP digitado pelo usuário. Retorna os dados de rua, bairro e cidade.",
-    parameters: {
-      type: "object",
-      properties: {
-        cep: { type: "string", description: "O CEP digitado pelo usuário (apenas números ou com traço)." }
-      },
-      required: ["cep"]
-    }
-  },
-  {
-    name: "completeRegistration",
-    description: "Finaliza o cadastro do cliente via chat após coletar todos os dados necessários.",
-    parameters: {
-      type: "object",
-      properties: {
-        name: { type: "string" },
-        email: { type: "string" },
-        phone: { type: "string" },
-        cep: { type: "string" },
-        street: { type: "string" },
-        number: { type: "string" },
-        neighborhood: { type: "string" },
-        city: { type: "string" }
-      },
-      required: ["name", "email", "phone", "cep", "street", "number", "neighborhood", "city"]
-    }
-  },
-  {
-    name: "submitFeedback",
-    description: "Envia a avaliação e comentários do cliente, encerrando o atendimento.",
-    parameters: {
-      type: "object",
-      properties: {
-        rating: { type: "integer", description: "Nota dada pelo cliente (ex: de 1 a 5)" },
-        comments: { type: "string", description: "Comentários descritivos do cliente (se houver)" }
-      },
-      required: ["rating"]
-    }
-  }
-];
+const { tool } = require("@langchain/core/tools");
+const { z } = require("zod");
+const { ChatPromptTemplate, MessagesPlaceholder } = require("@langchain/core/prompts");
 
 class SalesAgent {
-  getSystemPrompt(context, inventoryMin) {
-    let customerStr = "não identificado";
-    if (context.customerName) {
-      customerStr = `Identificado como ${context.customerName}. Perfil: ${context.customerProfile || 'BTC'}. Endereço: ${context.customerAddress}`;
-    }
+  getPromptTemplate() {
+    return ChatPromptTemplate.fromMessages([
+      ["system", `Você é um agente de Vendas da Padaria XPTO, altamente inteligente, gentil e conciso.
+Status do Cliente: {customerStr}
+Carrinho Atual: {cartStr}
+Contexto de Estoque (Produtos Recuperados RAG): {inventoryContext}
 
-    let cartStr = "Vazio";
-    if (Object.keys(context.cart || {}).length > 0) {
-      const cartItems = [];
-      for (const [id, qty] of Object.entries(context.cart)) {
-         const p = inventoryMin.find(i => i.id === id);
-         if (p) {
-            cartItems.push(`${qty}x ${p.name}`);
-         }
-      }
-      if (cartItems.length > 0) {
-        cartStr = cartItems.join(", ");
-      }
-    }
-
-    const hasCrossSeled = context.hasCrossSeled ? 'true' : 'false';
-
-    return `Você é um agente de Vendas da Padaria XPTO, altamente inteligente, gentil e conciso.
-Status do Cliente: ${customerStr}
-Carrinho Atual: ${cartStr}
-Estoque Disponível: ${JSON.stringify(inventoryMin)}
-Cross-sell oferecido: ${hasCrossSeled}
-Produto aguardando quantidade: ${context.pendingProduct || 'Nenhum'}
-
-CORE INSTRUCTIONS - FULL SYSTEM FLOW
-
-### 1. AUTENTICAÇÃO E TRIAGEM OBRIGATÓRIA (BTB / BTC / BTX)
-*   **Identificação Inicial:** Se o Status do Cliente for "não identificado", sua ÚNICA e exclusiva função é saudar o usuário de forma curta e solicitar o telefone ou e-mail. Exemplo: "Olá! Bem-vindo. Por favor, informe seu e-mail ou telefone para começarmos." Não mostre menus nem produtos nesta fase.
-*   **Busca de Cadastro:** Assim que o cliente fornecer o e-mail ou telefone, chame IMEDIATAMENTE a ferramenta lookupCustomer.
-*   **Fluxo de Cadastro Inexistente:** Se o lookupCustomer disser que o cadastro não foi encontrado, o sistema fornecerá automaticamente a opção do cliente clicar no botão "Cadastrar" na interface. No entanto, se o cliente não clicar e responder com o próprio nome, inicie a coleta manual de dados:
-    1. Você deve coletar na sequência: Nome Completo, o dado de contato faltante (telefone ou e-mail), e o CEP. 
-    2. Após coletar o CEP, chame IMEDIATAMENTE a ferramenta validateCEP.
-    3. Quando o sistema retornar o endereço (rua, bairro, cidade), mostre ao cliente e peça o Número da residência.
-    4. Com o número recebido, chame IMEDIATAMENTE a ferramenta completeRegistration informando todos os dados coletados (name, email, phone, cep, street, number, neighborhood, city). Só então o cadastro estará concluído e você pode iniciar o pedido.
-*   **Roteamento de Tela (BTB/BTC/BTX):** Após identificar o cliente (ou cadastrar), verifique o tipo de perfil:
-    *   Se o usuário possuir apenas perfil BTB, chame a ferramenta navigateToScreen com o parâmetro 'btb'.
-    *   Se o usuário possuir apenas perfil BTC, chame a ferramenta navigateToScreen com o parâmetro 'btc'.
-    *   Se o usuário possuir perfil BTX, pergunte: "Identifiquei que você possui acesso corporativo e pessoal. Por qual deles deseja navegar agora?". Aguarde a resposta e chame navigateToScreen.
-
-### 2. INTEGRIDADE DE ESTOQUE E NAVEGAÇÃO
-*   **Disponibilidade:** NUNCA invente, assuma ou gere IDs de produtos que não constem explicitamente no estoque retornado pelo sistema.
-*   **Exibição de Catálogo:** Quando o cliente buscar, descrever, solicitar ou mencionar qualquer produto/categoria (ex: "suco", "bebidas", "coxinha"), VOCÊ DEVE OBRIGATORIAMENTE chamar a ferramenta showProductMenu passando os IDs correspondentes. NUNCA responda apenas em texto oferecendo um produto, mesmo que exista apenas 1 opção no estoque. A ÚNICA forma permitida de oferecer ou mostrar um produto ao cliente é chamando a ferramenta showProductMenu.
-
-### 3. COMPRA DIRETA E QUANTIDADE (MÁQUINA DE ESTADOS)
-*   **Gatilho de Clique:** Se a mensagem recebida for uma [AÇÃO DO SISTEMA] informando que o cliente clicou em um botão para comprar, ignore a regra de exibição de catálogo. Você DEVE APENAS responder textualmente: "Quantas unidades você deseja?".
-*   **Adição ao Carrinho:** Se o status "Produto aguardando quantidade" não for "Nenhum" e o cliente enviar uma quantidade (ex: um número), chame OBRIGATORIAMENTE a ferramenta addToCart informando o ID do produto que está aguardando e a quantidade. NÃO pule para o checkout sem antes adicionar o produto ao carrinho.
-
-### 4. SUGESTÃO FINAL (CROSS-SELL) E FECHAMENTO
-*   **Primeira Tentativa de Checkout:** Quando o cliente solicitar o fechamento do pedido pela primeira vez, chame a ferramenta requestCheckout. NUNCA envie apenas uma resposta em texto.
-*   **Lógica de Cross-sell:** Se no payload do checkout a flag Cross-sell oferecido for false, preencha obrigatoriamente o parâmetro messageToUser sugerindo um produto real do estoque que complemente o carrinho atual. NUNCA use o termo "cross-sell".
-*   **Resumo do Pedido:** Após o cliente aceitar a sugestão de cross-sell e informar a quantidade, você DEVE PRIMEIRO chamar addToCart com o ID e quantidade informada. Somente após isso, chame requestCheckout novamente para gerar o resumo final. Se ele recusar o cross-sell, chame requestCheckout imediatamente.
-
-### 5. ENDEREÇO E FINALIZAÇÃO
-*   **Confirmação de Entrega:** Após a validação do resumo, o sistema exibirá o endereço. Se o cliente solicitar alteração, chame updateCustomerAddress com os novos dados e, em seguida, chame requestCheckout. Se ele confirmar, chame requestCheckout para finalizar.
-
-### 6. STATUS DO PEDIDO E RASTREAMENTO
-*   **Consulta Ativa:** Se o cliente perguntar sobre um pedido, chame getOrderStatus.
-*   **Atualizações Proativas:** Ao receber [AÇÃO DO SISTEMA] sobre mudança de status, repasse ao cliente.
-
-### 7. AVALIAÇÃO E PÓS-VENDA (FEEDBACK)
-*   **Gatilho de Encerramento:** Assim que o sistema injetar a confirmação de pedido "Entregue", chame triggerCustomerEvaluation.
-*   **Coleta de Notas/Comentários:** Se o cliente enviar uma nota, chame submitFeedback.
-
-### 8. DIRETRIZ ESTRITA DE EXECUÇÃO
-*   Você não deve simular transições de tela, alterações de carrinho, ou validação de CEP através de texto puro. Toda mudança de estado descrita exige a chamada da ferramenta correspondente. Se faltarem dados, pergunte objetivamente ao usuário.
-
-Formato de Resposta Esperado da sua parte:
-Como você é um LLM moderno, responda de forma puramente textual (texto limpo). 
-Para executar ações no sistema, FAÇA O CALL DAS FUNÇÕES/TOOLS disponíveis. 
-Se você não chamar nenhuma tool, sua resposta em texto será enviada normalmente.`;
+CORE INSTRUCTIONS & AUTO-CORREÇÃO:
+1. EXIBIR CARDS DE PRODUTOS (showProductMenu): Se o cliente pedir o cardápio, pedir opções, ou mencionar APENAS o nome de um produto (ex: "coxinha", "suco"), VOCÊ DEVE OBRIGATORIAMENTE chamar a ferramenta 'showProductMenu'. Identifique o ID do produto no 'Contexto de Estoque' e passe na tool. NUNCA responda apenas com texto descrevendo o produto sem acionar a tool para renderizar o card!
+2. EXCEÇÃO DO CLIQUE: Se a mensagem recebida começar com "[AÇÃO DO SISTEMA]", significa que o cliente já clicou no card. Nesse caso, NÃO chame 'showProductMenu', apenas pergunte a quantidade em texto livre.
+3. ADICIONAR AO CARRINHO (addToCart): OBRIGATÓRIO chamar 'addToCart' se houver intenção clara de compra. Se o cliente falar o produto e a quantidade (ex: "quero 2 coxinhas"), chame direto esta tool. Se não especificar quantidade, assuma 1 e avise na 'messageToUser'.
+4. IDENTIFICAÇÃO: Se não identificado, sua única função é pedir telefone ou e-mail e usar 'lookupCustomer'.
+5. FERRAMENTAS: Use chamadas de função nativas (tool call). NUNCA invente respostas formatadas em tags.
+6. CHECKOUT: Ao fechar pedido (usando 'requestCheckout'), garanta que o endereço já está confirmado.
+7. CROSS-SELL: NÃO ofereça adicionais antes da hora. Cross-sell APENAS no fechamento do pedido.
+8. AUTO-CORREÇÃO: Se ocorrer algum erro na ferramenta, peça desculpas educadamente e peça para o cliente reformular.`],
+      new MessagesPlaceholder("chat_history"),
+      ["user", "{input}"],
+      new MessagesPlaceholder("agent_scratchpad")
+    ]);
   }
 
-  getGeminiTools() {
-    return [{
-      functionDeclarations: toolsDefinition.map(t => {
-        let params = { type: "OBJECT", properties: {}, required: [] };
-        if (t.parameters.properties && Object.keys(t.parameters.properties).length > 0) {
-          params.properties = {};
-          for (const key in t.parameters.properties) {
-            params.properties[key] = {
-              type: t.parameters.properties[key].type.toUpperCase(),
-              description: t.parameters.properties[key].description
-            };
-            if (t.parameters.properties[key].type === 'array') {
-               params.properties[key].items = { type: t.parameters.properties[key].items.type.toUpperCase() };
-            }
-          }
-          params.required = t.parameters.required;
-        } else {
-          // Empty parameters schema
-          params = { type: "OBJECT" };
-        }
-        return {
-          name: t.name,
-          description: t.description,
-          parameters: params
-        };
+  getTools(toolExecutionState = {}) {
+    // Mantemos a factory para interceptação caso adicione o AgentExecutor futuramente
+    const intercept = (name, args) => {
+      toolExecutionState.called = name;
+      toolExecutionState.args = args;
+      return "Operação interceptada e processada no backend.";
+    };
+
+    return [
+      tool(async (args) => intercept("lookupCustomer", args), {
+        name: "lookupCustomer",
+        description: "Busca o cliente no banco de dados. Acione prioritariamente se o cliente não estiver identificado.",
+        schema: z.object({
+          identifier: z.coerce.string().describe("Telefone ou e-mail do usuário")
+        })
+      }),
+
+      // z.any() evita que o Langchain quebre se o LLM enviar parâmetros fantasmas num objeto vazio
+      tool(async (args) => intercept("requestCustomerRegistration", args), {
+        name: "requestCustomerRegistration",
+        description: "Solicita o formulário de cadastro ao cliente.",
+        schema: z.any()
+      }),
+
+      tool(async (args) => intercept("addToCart", args), {
+        name: "addToCart",
+        description: "Adiciona um produto ao carrinho. OBRIGATÓRIO chamar esta tool para adicionar itens.",
+        schema: z.object({
+          productId: z.coerce.string().optional().describe("ID do produto ou nome do produto. Preencha SEMPRE que souber!"),
+          quantity: z.coerce.number().optional().default(1).describe("Quantidade a ser adicionada. Assuma 1 se não especificado."),
+          messageToUser: z.coerce.string().optional()
+        })
+      }),
+
+      tool(async (args) => intercept("removeFromCart", args), {
+        name: "removeFromCart",
+        description: "Remove um produto do carrinho.",
+        schema: z.object({
+          productId: z.coerce.string().optional(),
+          quantity: z.coerce.number().optional(),
+          messageToUser: z.coerce.string().optional()
+        })
+      }),
+
+      tool(async (args) => intercept("showProductMenu", args), {
+        name: "showProductMenu",
+        description: "Exibe cards de produtos na interface para o cliente.",
+        schema: z.object({
+          // Essa união aceita String, Número, ou Array de ambos, e converte tudo forçadamente para Array de Strings. BLINDADO!
+          productIds: z.union([
+            z.array(z.coerce.string()),
+            z.coerce.string().transform(v => [v])
+          ]).optional().describe("IDs dos produtos a exibir. Extraia do Contexto de Estoque."),
+          messageToUser: z.coerce.string().optional()
+        })
+      }),
+
+      tool(async (args) => intercept("requestCheckout", args), {
+        name: "requestCheckout",
+        description: "Inicia, prossegue ou finaliza o pedido do cliente (fluxo de checkout e cross-sell).",
+        schema: z.object({
+          category: z.coerce.string().optional().describe("Categoria de cross-sell, se aplicável")
+        })
+      }),
+
+      tool(async (args) => intercept("getOrderStatus", args), {
+        name: "getOrderStatus",
+        description: "Consulta o status do último pedido do cliente.",
+        schema: z.any()
+      }),
+
+      tool(async (args) => intercept("requestAgent", args), {
+        name: "requestAgent",
+        description: "Transfere o atendimento para um humano.",
+        schema: z.object({
+          reason: z.coerce.string().describe("Motivo da transferência")
+        })
+      }),
+
+      tool(async (args) => intercept("updateAddress", args), {
+        name: "updateAddress",
+        description: "Atualiza o endereço de entrega do cliente.",
+        schema: z.object({
+          address: z.coerce.string().describe("Endereço completo")
+        })
+      }),
+
+      tool(async (args) => intercept("navigateToScreen", args), {
+        name: "navigateToScreen",
+        description: "Redireciona o usuário para a tela específica (btb ou btc).",
+        schema: z.object({
+          screen: z.coerce.string().describe("A tela para redirecionamento")
+        })
+      }),
+
+      tool(async (args) => intercept("validateCEP", args), {
+        name: "validateCEP",
+        description: "Valida um CEP digitado pelo usuário.",
+        schema: z.object({
+          cep: z.coerce.string()
+        })
+      }),
+
+      tool(async (args) => intercept("completeRegistration", args), {
+        name: "completeRegistration",
+        description: "Finaliza o cadastro do cliente via chat com todos os dados.",
+        schema: z.object({
+          name: z.coerce.string(),
+          email: z.coerce.string(),
+          phone: z.coerce.string(),
+          cep: z.coerce.string(),
+          street: z.coerce.string(),
+          number: z.coerce.string(),
+          neighborhood: z.coerce.string(),
+          city: z.coerce.string()
+        })
+      }),
+
+      tool(async (args) => intercept("triggerCustomerEvaluation", args), {
+        name: "triggerCustomerEvaluation",
+        description: "Inicia a pesquisa de satisfação.",
+        schema: z.any()
+      }),
+
+      tool(async (args) => intercept("submitFeedback", args), {
+        name: "submitFeedback",
+        description: "Envia a avaliação final do cliente.",
+        schema: z.object({
+          rating: z.coerce.number()
+        })
       })
-    }];
-  }
-
-  getGroqTools() {
-    return toolsDefinition.map(t => ({
-      type: "function",
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.parameters.properties ? t.parameters : { type: "object", properties: {} }
-      }
-    }));
+    ];
   }
 }
 

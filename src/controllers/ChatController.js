@@ -1,28 +1,52 @@
+const { z } = require('zod');
 const chatService = require('../services/ChatService');
+
+// Schema de validação Zod para garantir integridade e sanitização da entrada
+const chatRequestSchema = z.object({
+  message: z.union([z.string(), z.record(z.any())]).transform(val => {
+    if (typeof val === 'string') return val;
+    return val.text || val.content || JSON.stringify(val);
+  }),
+  context: z.union([z.string(), z.record(z.any())]).optional().transform(val => {
+    if (typeof val === 'string') {
+      try { return val ? JSON.parse(val) : {}; }
+      catch { return {}; }
+    }
+    return val || {};
+  })
+});
 
 class ChatController {
   async handleMessage(req, res) {
     try {
-      let { message, context } = req.body;
-      
-      if (typeof context === 'string') {
-        try {
-          context = context ? JSON.parse(context) : {};
-        } catch (e) {
-          console.error('Erro ao fazer parse do context:', e);
-          context = {};
-        }
+      // 1. Validação e normalização estruturada
+      const parseResult = chatRequestSchema.safeParse(req.body);
+
+      if (!parseResult.success) {
+        return res.status(400).json({
+          error: 'Formato de requisição inválido',
+          details: parseResult.error.issues
+        });
       }
 
-      if (!message) {
-        return res.status(400).json({ error: 'Mensagem é obrigatória' });
+      const { message, context } = parseResult.data;
+
+      if (!message || message.trim() === '') {
+        return res.status(400).json({ error: 'A mensagem não pode estar vazia' });
       }
 
+      // 2. Processamento da regra de negócio (LLM / Agent)
       const response = await chatService.processMessage(message, context);
       return res.status(200).json(response);
+
     } catch (error) {
-      console.error('Erro no ChatController:', error);
-      return res.status(500).json({ error: 'Erro interno no servidor' });
+      console.error('[ChatController] Erro:', error);
+
+      // 3. Resposta de erro padronizada e segura
+      return res.status(error.status || 500).json({
+        error: 'Ocorreu um erro interno ao processar a mensagem.',
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
     }
   }
 }
