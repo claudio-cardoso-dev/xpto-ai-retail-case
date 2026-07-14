@@ -11,7 +11,7 @@ Carrinho Atual: {cartStr}
 Contexto de Estoque (Produtos Recuperados RAG): {inventoryContext}
 
 CORE INSTRUCTIONS & AUTO-CORREÇÃO:
-1. EXIBIR CARDS DE PRODUTOS (showProductMenu): Se o cliente pedir o cardápio, pedir opções, ou mencionar APENAS o nome de um produto (ex: "coxinha", "suco"), VOCÊ DEVE OBRIGATORIAMENTE chamar a ferramenta 'showProductMenu'. Identifique o ID do produto no 'Contexto de Estoque' e passe na tool. NUNCA responda apenas com texto descrevendo o produto sem acionar a tool para renderizar o card!
+1. EXIBIR CARDS DE PRODUTOS (showProductMenu): Se o cliente pedir uma categoria inteira ("Salgados", "Doces", "Bebidas", "Cardápio"), chame 'showProductMenu' informando APENAS o parâmetro 'category' (deixe productIds vazio). Se ele pedir um produto específico (ex: "coxinha", "suco"), extraia o ID do 'Contexto de Estoque' e passe no parâmetro 'productIds'. NUNCA responda descrevendo o produto sem acionar a tool!
 2. EXCEÇÃO DO CLIQUE: Se a mensagem recebida começar com "[AÇÃO DO SISTEMA]", significa que o cliente já clicou no card. Nesse caso, NÃO chame 'showProductMenu', apenas pergunte a quantidade em texto livre.
 3. ADICIONAR AO CARRINHO (addToCart): OBRIGATÓRIO chamar 'addToCart' se houver intenção clara de compra. Se o cliente falar o produto e a quantidade (ex: "quero 2 coxinhas"), chame direto esta tool. Se não especificar quantidade, assuma 1 e avise na 'messageToUser'.
 4. IDENTIFICAÇÃO: Se não identificado, sua única função é pedir telefone ou e-mail e usar 'lookupCustomer'.
@@ -73,6 +73,7 @@ CORE INSTRUCTIONS & AUTO-CORREÇÃO:
         name: "showProductMenu",
         description: "Exibe cards de produtos na interface para o cliente.",
         schema: z.object({
+          category: z.coerce.string().optional().describe("Filtre por categoria ('Salgados', 'Doces' ou 'Bebidas') se o cliente pedir de forma genérica."),
           // Essa união aceita String, Número, ou Array de ambos, e converte tudo forçadamente para Array de Strings. BLINDADO!
           productIds: z.union([
             z.array(z.coerce.string()),

@@ -137,7 +137,7 @@ class ChatService {
               failureCount: 0
             });
             finalResponse.text = `Bem-vindo de volta, ${customer.name}! Identifiquei seu cadastro. O que você gostaria de pedir hoje ou deseja acompanhar seu pedido?`;
-            finalResponse.options = ["Cardápio", "Acompanhar Pedido"];
+            finalResponse.options = ["Cardápio", "Salgados", "Doces", "Bebidas", "Acompanhar Pedido"];
           } else {
             context.flowState = 'REGISTRATION';
             context.failureCount = 0;
@@ -165,9 +165,13 @@ class ChatService {
       case 'ORDER_TRACKING':
       case 'SHOPPING_CROSS_SELL':
       case 'CHECKOUT_RETENTION':
-        // Extração de Intenção com Fail-Safe
-        const nluResult = await IntentEngine.extract(systemInjectedMessage);
-        const isSimpleReply = /^(sim|não|nao|fechar pedido|ok|certo|correto|alterar)$/i.test(message.trim());
+        const isSimpleReply = /^(sim|não|nao|fechar pedido|ok|certo|correto|alterar|tudo certo|desejo alterar)$/i.test(message.trim());
+        let nluResult = { intent: 'UNKNOWN', confidence: 1 };
+        
+        // Economiza tokens e evita Rate Limits do LLM ignorando o NLU para respostas óbvias
+        if (!isSimpleReply && !context.isConfirmingOrder && !context.isConfirmingAddress) {
+          nluResult = await IntentEngine.extract(systemInjectedMessage);
+        }
 
         if ((nluResult.intent === 'UNKNOWN' || nluResult.confidence < 0.6) && !isSimpleReply && !context.isConfirmingOrder && !context.isConfirmingAddress) {
           context.failureCount++;
@@ -207,6 +211,71 @@ class ChatService {
           if (context.couponOffered && msgLower.includes('aceito')) {
             context.couponApplied = true;
           }
+        }
+
+        // --- CHECKOUT CONFIRMATION BYPASS (AVOID RATE LIMITS) ---
+        if (context.isConfirmingOrder) {
+          if (msgLower === 'sim' || msgLower.includes('tudo certo') || msgLower.includes('correto')) {
+            finalResponse.text = `Ótimo! O endereço de entrega é:\n📍 ${context.customerAddress}\n\nEstá correto ou deseja alterar?`;
+            context.isConfirmingAddress = true;
+            context.isConfirmingOrder = false;
+            finalResponse.options = ["Tudo Certo", "Desejo Alterar"];
+            
+            context.history.push({ role: 'user', text: message });
+            context.history.push({ role: 'assistant', text: finalResponse.text });
+            finalResponse.context = context;
+            return finalResponse;
+          }
+          if (msgLower === 'não' || msgLower.includes('cardápio') || msgLower.includes('alterar')) {
+            context.isConfirmingOrder = false;
+            context.hasCrossSeled = false;
+            context.flowState = 'SHOPPING_CROSS_SELL';
+            finalResponse.text = "Ok, vamos voltar ao cardápio! O que mais deseja?";
+            finalResponse.options = ["Cardápio", "Salgados", "Doces", "Bebidas"];
+            
+            context.history.push({ role: 'user', text: message });
+            context.history.push({ role: 'assistant', text: finalResponse.text });
+            finalResponse.context = context;
+            return finalResponse;
+          }
+        }
+
+        if (context.isConfirmingAddress) {
+          if (msgLower === 'sim' || msgLower.includes('tudo certo') || msgLower.includes('correto')) {
+            finalResponse.text = `Perfeito! Seu pedido foi confirmado e será entregue em breve no endereço:\n📍 ${context.customerAddress}\n\nEstamos enviando para a cozinha!\n\nGostaria de avaliar seu atendimento hoje? De 1 a 5, que nota você daria para a nossa conversa?`;
+            finalResponse.action = 'CREATE_ORDER';
+            finalResponse.options = ["1", "2", "3", "4", "5"];
+            Object.assign(context, { cart: {}, isConfirmingOrder: false, isConfirmingAddress: false, hasCrossSeled: false, flowState: 'METRICS_CSAT', isEvaluating: true });
+            
+            context.history.push({ role: 'user', text: message });
+            context.history.push({ role: 'assistant', text: finalResponse.text });
+            finalResponse.context = context;
+            return finalResponse;
+          }
+          if (msgLower.includes('alterar') || msgLower === 'não') {
+            finalResponse.text = "Por favor, digite o novo endereço completo (Rua, Número, Bairro, Cidade):";
+            context.isConfirmingAddress = false;
+            context.pendingAddressUpdate = true;
+            finalResponse.options = [];
+            
+            context.history.push({ role: 'user', text: message });
+            context.history.push({ role: 'assistant', text: finalResponse.text });
+            finalResponse.context = context;
+            return finalResponse;
+          }
+        }
+        
+        if (context.pendingAddressUpdate) {
+          context.customerAddress = message;
+          context.pendingAddressUpdate = false;
+          finalResponse.text = `Endereço atualizado com sucesso para:\n📍 ${context.customerAddress}\n\nTudo certo para prosseguirmos?`;
+          context.isConfirmingAddress = true;
+          finalResponse.options = ["Tudo Certo", "Desejo Alterar"];
+          
+          context.history.push({ role: 'user', text: message });
+          context.history.push({ role: 'assistant', text: finalResponse.text });
+          finalResponse.context = context;
+          return finalResponse;
         }
 
         // Preparação do Contexto RAG / Estoque
@@ -285,10 +354,15 @@ class ChatService {
             if (toolCalled === 'showProductMenu') {
               // Convertendo as tipagens para string forçadamente para o .includes não falhar
               const idsToFilter = toolArgs?.productIds?.map(id => String(id)) || [];
+              const categoryFilter = toolArgs?.category ? String(toolArgs.category).toLowerCase().trim() : null;
 
-              finalResponse.products = idsToFilter.length
-                ? fullInventory.filter(p => idsToFilter.includes(String(p.id)))
-                : fullInventory;
+              if (categoryFilter) {
+                finalResponse.products = fullInventory.filter(p => categoryFilter.includes(String(p.category || '').toLowerCase().trim()));
+              } else if (idsToFilter.length > 0) {
+                finalResponse.products = fullInventory.filter(p => idsToFilter.includes(String(p.id)));
+              } else {
+                finalResponse.products = fullInventory;
+              }
 
               finalResponse.text = toolArgs.messageToUser || "Aqui estão as opções:";
             }
@@ -333,15 +407,9 @@ class ChatService {
               let { total, cartItems } = this._calculateCart(context.cart, fullInventory, context.couponApplied);
 
               if (context.isConfirmingAddress) {
-                finalResponse.text = `Perfeito! Seu pedido foi confirmado e será entregue em breve no endereço:\n📍 ${context.customerAddress}\n\nEstamos enviando para a cozinha!\n\nGostaria de avaliar seu atendimento hoje? De 1 a 5, que nota você daria para a nossa conversa?`;
-                finalResponse.options = ["1", "2", "3", "4", "5"];
-                finalResponse.action = 'CREATE_ORDER';
-
-                // Reset de carrinho pós-compra
-                Object.assign(context, { cart: {}, isConfirmingOrder: false, isConfirmingAddress: false, hasCrossSeled: false, flowState: 'METRICS_CSAT', isEvaluating: true });
+                // Tratado no bypass acima, nunca vai chegar aqui se entrar nas regras
               } else if (context.isConfirmingOrder) {
-                finalResponse.text = `Ótimo! O endereço de entrega é:\n📍 ${context.customerAddress}\n\nEstá correto ou deseja alterar?`;
-                context.isConfirmingAddress = true;
+                // Tratado no bypass acima
               } else {
                 if (!context.hasCrossSeled) {
                   finalResponse.text = toolArgs.messageToUser || 'Gostaria de adicionar algo mais para acompanhar?';
