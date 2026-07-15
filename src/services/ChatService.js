@@ -105,6 +105,21 @@ class ChatService {
       } catch (e) {
         console.error("[Form Parse Error]:", e);
       }
+    } else if (message.startsWith('[DADOS_DO_ENDERECO]:')) {
+      try {
+        const formData = JSON.parse(message.replace('[DADOS_DO_ENDERECO]:', '').trim());
+        context.customerAddress = `${formData.street}, ${formData.number} ${formData.complement || ''} - ${formData.neighborhood}, ${formData.city} - ${formData.cep}`;
+        context.pendingAddressUpdate = false;
+        context.isConfirmingAddress = true;
+        finalResponse.text = `Endereço atualizado com sucesso para:\n📍 ${context.customerAddress}\n\nTudo certo para prosseguirmos?`;
+        finalResponse.options = ["Tudo Certo", "Desejo Alterar"];
+        context.history.push({ role: 'user', text: "Atualizou o endereço através do formulário." });
+        context.history.push({ role: 'assistant', text: finalResponse.text });
+        finalResponse.context = context;
+        return finalResponse;
+      } catch (e) {
+        console.error("[Address Form Parse Error]:", e);
+      }
     } else if (msgLower.includes('quero pedir:')) {
       const productName = message.replace(/Quero pedir:/i, '').trim();
       context.pendingProduct = productName;
@@ -196,7 +211,7 @@ class ChatService {
       case 'ORDER_TRACKING':
       case 'SHOPPING_CROSS_SELL':
       case 'CHECKOUT_RETENTION':
-        const isSimpleReply = /^(sim|não|nao|fechar pedido|ok|certo|correto|alterar|tudo certo|desejo alterar)$/i.test(message.trim()) || !!context.pendingProduct;
+        const isSimpleReply = /^(sim|não|nao|não quero|nao quero|fechar pedido|ok|certo|correto|alterar|tudo certo|desejo alterar|aceito o desconto|aceito|não, obrigado|nao, obrigado)$/i.test(message.trim()) || !!context.pendingProduct;
         let nluResult = { intent: 'UNKNOWN', confidence: 1 };
         
         // Economiza tokens e evita Rate Limits do LLM ignorando o NLU para respostas óbvias
@@ -226,7 +241,6 @@ class ChatService {
 
           if (context.failureCount > 2) {
             finalResponse.text = "Não estou conseguindo compreender. Vou te direcionar para o site para você ser melhor atendido.";
-            finalResponse.options = ['Ir para o site'];
             finalResponse.redirectToSite = true;
             return finalResponse;
           } else {
@@ -247,22 +261,59 @@ class ChatService {
 
         // Regra de Negócio: Retenção de Carrinho
         if (context.flowState === 'CHECKOUT_RETENTION') {
-          const negativeKeywords = ['caro', 'desistir', 'não quero', 'cancelar'];
-          if (negativeKeywords.some(kw => msgLower.includes(kw))) {
+          const negativeKeywords = ['caro', 'desistir', 'não quero', 'nao quero', 'cancelar', 'não, obrigado', 'nao, obrigado'];
+          
+          const isNegative = negativeKeywords.some(kw => msgLower.includes(kw)) || msgLower === 'não' || msgLower === 'nao';
+          
+          if (isNegative) {
             if (!context.couponOffered) {
               context.couponOffered = true;
-              finalResponse.text = "Entendo perfeitamente! Para não perder seu pedido, que tal um cupom de 10% de desconto no total? Deseja aplicar o desconto e finalizar?";
+              
+              if (context.hasCrossSeled && !context.isConfirmingOrder) {
+                finalResponse.text = "Entendo perfeitamente! Para não perder essa oferta, que tal um cupom de 10% de desconto no total? Deseja aplicar o desconto e finalizar?";
+              } else {
+                finalResponse.text = "Entendo perfeitamente! Para não perder seu pedido, que tal um cupom de 10% de desconto no total? Deseja aplicar o desconto e finalizar?";
+              }
+              
               finalResponse.options = ["Aceito o desconto", "Não, obrigado"];
               return finalResponse;
             } else {
-              finalResponse.text = "Sem problemas. Se mudar de ideia, estamos no site oficial.";
-              finalResponse.options = ['Ir para o site'];
-              finalResponse.redirectToSite = true;
-              return finalResponse;
+              if (context.hasCrossSeled && !context.isConfirmingOrder) {
+                const fullInventory = await inventoryRepository.getAll();
+                let { formattedTotal, cartItems } = this._calculateCart(context.cart, fullInventory, false);
+                finalResponse.text = `Sem problemas!\n\nResumo do pedido:\n\n${cartItems}\n\n💰 Total: ${formattedTotal}\n\nTudo certo para prosseguirmos?`;
+                context.isConfirmingOrder = true;
+                context.flowState = 'CHECKOUT_RETENTION';
+                finalResponse.options = ["Tudo Certo", "Desejo Alterar"];
+                return finalResponse;
+              } else {
+                context.isConverted = false;
+                context.flowState = 'METRICS_CSAT';
+                context.isEvaluating = true;
+                finalResponse.text = "Sem problemas! Se mudar de ideia, estamos no site oficial. Antes de encerrarmos, de 1 a 5, que nota você daria para a nossa conversa?";
+                finalResponse.options = ["1", "2", "3", "4", "5"];
+                
+                context.history.push({ role: 'user', text: message });
+                context.history.push({ role: 'assistant', text: finalResponse.text });
+                finalResponse.context = context;
+                return finalResponse;
+              }
             }
           }
+          
           if (context.couponOffered && msgLower.includes('aceito')) {
             context.couponApplied = true;
+            const fullInventory = await inventoryRepository.getAll();
+            let { formattedTotal, cartItems } = this._calculateCart(context.cart, fullInventory, true);
+            finalResponse.text = `Desconto aplicado com sucesso! 🎉\n\nResumo do pedido:\n\n${cartItems}\n\n💰 Total: ${formattedTotal}\n\nTudo certo para prosseguirmos?`;
+            context.isConfirmingOrder = true;
+            context.flowState = 'CHECKOUT_RETENTION';
+            finalResponse.options = ["Tudo Certo", "Desejo Alterar"];
+            
+            context.history.push({ role: 'user', text: message });
+            context.history.push({ role: 'assistant', text: finalResponse.text });
+            finalResponse.context = context;
+            return finalResponse;
           }
         }
 
@@ -306,7 +357,8 @@ class ChatService {
             return finalResponse;
           }
           if (msgLower.includes('alterar') || msgLower === 'não') {
-            finalResponse.text = "Por favor, digite o novo endereço completo (Rua, Número, Bairro, Cidade):";
+            finalResponse.text = "Por favor, preencha o formulário com o novo endereço de entrega:";
+            finalResponse.action = 'SHOW_ADDRESS_FORM';
             context.isConfirmingAddress = false;
             context.pendingAddressUpdate = true;
             finalResponse.options = [];
@@ -446,12 +498,19 @@ class ChatService {
 
                 if (context.hasCrossSeled) {
                   context.flowState = 'CHECKOUT_RETENTION';
-                  let { total, cartItems } = this._calculateCart(context.cart, fullInventory, context.couponApplied);
+                  let { formattedTotal, cartItems } = this._calculateCart(context.cart, fullInventory, context.couponApplied);
 
-                  finalResponse.text = `Adicionado! Resumo:\n\n${cartItems}\n\n💰 Total: R$ ${total.toFixed(2)}\n\nTudo certo para prosseguirmos?`;
+                  finalResponse.text = `Adicionado! Resumo:\n\n${cartItems}\n\n💰 Total: ${formattedTotal}\n\nTudo certo para prosseguirmos?`;
                   context.isConfirmingOrder = true;
                 } else {
-                  let msg = toolArgs.messageToUser || `Adicionado ao carrinho com sucesso!`;
+                  const product = fullInventory.find(p => p.id === productId);
+                  const productName = product ? product.name : 'Item';
+                  let msg = toolArgs.messageToUser || `${qty}x ${productName} adicionado(s) ao carrinho com sucesso!`;
+                  
+                  if (!msg.toLowerCase().includes(productName.toLowerCase()) || !msg.includes(String(qty))) {
+                      msg = `${qty}x ${productName} adicionado(s) ao carrinho com sucesso!`;
+                  }
+
                   finalResponse.text = msg.includes('?') ? msg : `${msg} Deseja mais alguma coisa?`;
                 }
               } else {
@@ -503,12 +562,15 @@ class ChatService {
                   if (suggested) {
                     finalResponse.products = [suggested];
                     finalResponse.text = toolArgs.messageToUser || `Para acompanhar, que tal experimentar nosso(a) ${suggested.name}?`;
+                    finalResponse.options = ["Cardápio", "Não quero"];
                   } else {
                     finalResponse.text = toolArgs.messageToUser || 'Gostaria de adicionar algo mais para acompanhar?';
+                    finalResponse.options = ["Cardápio", "Não quero"];
                   }
 
                 } else {
-                  finalResponse.text = `Resumo do pedido:\n\n${cartItems}\n\n💰 Total: R$ ${total.toFixed(2)}\n\nTudo certo para prosseguirmos?`;
+                  let { formattedTotal, cartItems } = this._calculateCart(context.cart, fullInventory, context.couponApplied);
+                  finalResponse.text = `Resumo do pedido:\n\n${cartItems}\n\n💰 Total: ${formattedTotal}\n\nTudo certo para prosseguirmos?`;
                   context.isConfirmingOrder = true;
                 }
               }
@@ -536,7 +598,6 @@ class ChatService {
         } catch (error) {
           console.error("[LLM Chain Error]:", error);
           finalResponse.text = 'Ocorreu um erro de comunicação com o assistente. Deseja continuar no site oficial?';
-          finalResponse.options = ['Ir para o site'];
           finalResponse.redirectToSite = true;
         }
         break;
@@ -558,7 +619,7 @@ class ChatService {
             chat_time_seconds: timeSpent,
             evaluation: rating,
             handoff: false,
-            conversion: true
+            conversion: context.isConverted !== false
           }));
         }
         break;
@@ -586,16 +647,25 @@ class ChatService {
 
   // Helper Limpo para calcular o resumo do carrinho
   _calculateCart(cartMap, inventory, isCouponApplied) {
-    let total = 0;
+    let originalTotal = 0;
     let items = [];
     for (const [id, qty] of Object.entries(cartMap)) {
       const p = inventory.find(i => String(i.id) === String(id));
       if (p) {
-        total += p.price * qty;
+        originalTotal += p.price * qty;
         items.push(`• ${qty}x ${p.name}`);
       }
     }
-    return { total: isCouponApplied ? total * 0.9 : total, cartItems: items.join('\n') };
+    
+    let formattedTotal = `R$ ${originalTotal.toFixed(2)}`;
+    let finalTotal = originalTotal;
+    
+    if (isCouponApplied) {
+      finalTotal = originalTotal * 0.9;
+      formattedTotal = `De R$ ${originalTotal.toFixed(2)} por apenas R$ ${finalTotal.toFixed(2)} (-10%)`;
+    }
+
+    return { total: finalTotal, cartItems: items.join('\n'), formattedTotal };
   }
 }
 
