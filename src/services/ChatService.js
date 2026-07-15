@@ -265,17 +265,20 @@ class ChatService {
           
           const isNegative = negativeKeywords.some(kw => msgLower.includes(kw)) || msgLower === 'não' || msgLower === 'nao';
           
-          if (isNegative) {
-            if (!context.couponOffered) {
-              context.couponOffered = true;
+          if (context.awaitingCouponResponse) {
+            context.awaitingCouponResponse = false;
+            if (msgLower.includes('aceito')) {
+              context.couponApplied = true;
+              const fullInventory = await inventoryRepository.getAll();
+              let { formattedTotal, cartItems } = this._calculateCart(context.cart, fullInventory, true);
+              finalResponse.text = `Desconto aplicado com sucesso! 🎉\n\nResumo do pedido:\n\n${cartItems}\n\n💰 Total: ${formattedTotal}\n\nTudo certo para prosseguirmos?`;
+              context.isConfirmingOrder = true;
+              context.flowState = 'CHECKOUT_RETENTION';
+              finalResponse.options = ["Tudo Certo", "Desejo Alterar"];
               
-              if (context.hasCrossSeled && !context.isConfirmingOrder) {
-                finalResponse.text = "Entendo perfeitamente! Para não perder essa oferta, que tal um cupom de 10% de desconto no total? Deseja aplicar o desconto e finalizar?";
-              } else {
-                finalResponse.text = "Entendo perfeitamente! Para não perder seu pedido, que tal um cupom de 10% de desconto no total? Deseja aplicar o desconto e finalizar?";
-              }
-              
-              finalResponse.options = ["Aceito o desconto", "Não, obrigado"];
+              context.history.push({ role: 'user', text: message });
+              context.history.push({ role: 'assistant', text: finalResponse.text });
+              finalResponse.context = context;
               return finalResponse;
             } else {
               if (context.hasCrossSeled && !context.isConfirmingOrder) {
@@ -299,21 +302,32 @@ class ChatService {
                 return finalResponse;
               }
             }
-          }
-          
-          if (context.couponOffered && msgLower.includes('aceito')) {
-            context.couponApplied = true;
-            const fullInventory = await inventoryRepository.getAll();
-            let { formattedTotal, cartItems } = this._calculateCart(context.cart, fullInventory, true);
-            finalResponse.text = `Desconto aplicado com sucesso! 🎉\n\nResumo do pedido:\n\n${cartItems}\n\n💰 Total: ${formattedTotal}\n\nTudo certo para prosseguirmos?`;
-            context.isConfirmingOrder = true;
-            context.flowState = 'CHECKOUT_RETENTION';
-            finalResponse.options = ["Tudo Certo", "Desejo Alterar"];
-            
-            context.history.push({ role: 'user', text: message });
-            context.history.push({ role: 'assistant', text: finalResponse.text });
-            finalResponse.context = context;
-            return finalResponse;
+          } else {
+            if (isNegative) {
+              if (!context.couponApplied) {
+                context.awaitingCouponResponse = true;
+                
+                if (context.hasCrossSeled && !context.isConfirmingOrder) {
+                  finalResponse.text = "Entendo perfeitamente! Para não perder essa oferta, que tal um cupom de 10% de desconto no total? Deseja aplicar o desconto e finalizar?";
+                } else {
+                  finalResponse.text = "Entendo perfeitamente! Para não perder seu pedido, que tal um cupom de 10% de desconto no total? Deseja aplicar o desconto e finalizar?";
+                }
+                
+                finalResponse.options = ["Aceito o desconto", "Não, obrigado"];
+                return finalResponse;
+              } else {
+                context.isConverted = false;
+                context.flowState = 'METRICS_CSAT';
+                context.isEvaluating = true;
+                finalResponse.text = "Sem problemas! Se mudar de ideia, estamos no site oficial. Antes de encerrarmos, de 1 a 5, que nota você daria para a nossa conversa?";
+                finalResponse.options = ["1", "2", "3", "4", "5"];
+                
+                context.history.push({ role: 'user', text: message });
+                context.history.push({ role: 'assistant', text: finalResponse.text });
+                finalResponse.context = context;
+                return finalResponse;
+              }
+            }
           }
         }
 
