@@ -6,11 +6,12 @@ const dbPath = path.resolve(__dirname, 'customers.db');
 const db = new sqlite3.Database(dbPath, (err) => {
   if (err) {
     console.error('Erro ao conectar ao banco de dados SQLite:', err.message);
-  } else {
+  } else if (process.env.NODE_ENV !== 'test') {
     console.log('Conectado ao banco de dados SQLite.');
-    initDb();
   }
 });
+
+initDb();
 
 function initDb() {
   db.serialize(() => {

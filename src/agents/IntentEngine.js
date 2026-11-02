@@ -4,22 +4,24 @@ const { ChatPromptTemplate } = require("@langchain/core/prompts");
 
 class IntentEngine {
   constructor() {
+    const apiKey = process.env.GROQ_API_KEY || "gsk_dummy_key_for_ci";
+
     const fallbackLlm = new ChatGroq({
-      apiKey: process.env.GROQ_API_KEY,
+      apiKey,
       model: "llama-3.1-8b-instant",
       temperature: 0.1,
       maxRetries: 0,
     });
 
     const primaryLlm = new ChatGroq({
-      apiKey: process.env.GROQ_API_KEY,
+      apiKey,
       model: "qwen/qwen3-32b", // Usar um modelo melhorzinho para NLP, ou manter 3.1
       temperature: 0.1,
       maxRetries: 0,
     });
 
     const fallbackLlm2 = new ChatGroq({
-      apiKey: process.env.GROQ_API_KEY,
+      apiKey,
       model: "gemma2-9b-it",
       temperature: 0.1,
       maxRetries: 0,

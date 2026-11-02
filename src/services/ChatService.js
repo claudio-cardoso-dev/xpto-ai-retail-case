@@ -13,23 +13,25 @@ const { HumanMessage, AIMessage } = require("@langchain/core/messages");
 
 class ChatService {
   constructor() {
+    const apiKey = process.env.GROQ_API_KEY || "gsk_dummy_key_for_ci";
+
     // Inicialização otimizada dos modelos
     this.primaryLlm = new ChatGroq({
-      apiKey: process.env.GROQ_API_KEY,
+      apiKey,
       model: "qwen/qwen3-32b",
       temperature: 0.1,
       maxRetries: 0,
     });
 
     this.fallbackLlm = new ChatGroq({
-      apiKey: process.env.GROQ_API_KEY,
+      apiKey,
       model: "llama-3.1-8b-instant",
       temperature: 0.1,
       maxRetries: 0,
     });
 
     this.emergencyFallbackLlm = new ChatGroq({
-      apiKey: process.env.GROQ_API_KEY,
+      apiKey,
       model: "gemma2-9b-it",
       temperature: 0.1,
       maxRetries: 0,

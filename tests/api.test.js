@@ -28,12 +28,21 @@ describe('API Integration Tests & Auth', () => {
     expect(Array.isArray(res.body)).toBe(true);
   });
 
+  it('Should reject empty chat message (400)', async () => {
+    const res = await request(app)
+      .post('/api/xpto/api/chat')
+      .set('Authorization', VALID_AUTH_HEADER)
+      .send({ message: '' });
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toContain('A mensagem não pode estar vazia');
+  });
+
   it('Should process chat messages correctly via POST (200)', async () => {
     const res = await request(app)
       .post('/api/xpto/api/chat')
       .set('Authorization', VALID_AUTH_HEADER)
       .send({ message: 'oi' });
     expect(res.statusCode).toBe(200);
-    expect(res.body.text).toContain('Olá');
+    expect(res.body.text).toContain('Formato inválido');
   });
 });

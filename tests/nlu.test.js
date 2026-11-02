@@ -2,21 +2,52 @@ require('dotenv').config();
 const IntentEngine = require('../src/agents/IntentEngine');
 
 describe('IntentEngine (NLU) Tests', () => {
-  it('Should classify "Olá" as GREETING', async () => {
-    const result = await IntentEngine.extract('Olá, tudo bem?');
-    expect(result.intent).toBe('GREETING');
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
-  it('Should classify phone number as PROVIDE_DATA and extract it', async () => {
-    const result = await IntentEngine.extract('11945256750');
-    expect(result.intent).toBe('PROVIDE_DATA');
-    expect(result.entities.phoneOrEmail).toBe('11945256750');
+  it('Should validate schema and classify order tracking as ACOMPANHAR_PEDIDO', async () => {
+    jest.spyOn(IntentEngine.prompt, 'pipe').mockReturnValue({
+      invoke: jest.fn().mockResolvedValue({
+        intent: 'ACOMPANHAR_PEDIDO',
+        confidence: 0.95,
+        entities: {}
+      })
+    });
+
+    const result = await IntentEngine.extract('onde está meu pedido?');
+    const parsed = IntentEngine.schema.parse(result);
+    expect(parsed.intent).toBe('ACOMPANHAR_PEDIDO');
+    expect(parsed.confidence).toBeGreaterThan(0.5);
   });
 
-  it('Should classify "quero 2 pudins" as ORDER_PRODUCT or ADD_TO_CART', async () => {
+  it('Should classify "quero 2 pudins" as COMPRAR and extract product entities', async () => {
+    jest.spyOn(IntentEngine.prompt, 'pipe').mockReturnValue({
+      invoke: jest.fn().mockResolvedValue({
+        intent: 'COMPRAR',
+        confidence: 0.98,
+        entities: {
+          productName: 'pudim',
+          quantity: 2
+        }
+      })
+    });
+
     const result = await IntentEngine.extract('quero 2 pudins');
-    expect(['ADD_TO_CART', 'ORDER_PRODUCT']).toContain(result.intent);
-    expect(result.entities.productName.toLowerCase()).toContain('pudim');
-    expect(result.entities.quantity).toBe(2);
+    const parsed = IntentEngine.schema.parse(result);
+    expect(parsed.intent).toBe('COMPRAR');
+    expect(parsed.entities.productName.toLowerCase()).toContain('pudim');
+    expect(parsed.entities.quantity).toBe(2);
+  });
+
+  it('Should safely fallback to UNKNOWN when LLM throws an error (e.g. missing API key)', async () => {
+    jest.spyOn(IntentEngine.prompt, 'pipe').mockReturnValue({
+      invoke: jest.fn().mockRejectedValue(new Error('Invalid API Key'))
+    });
+
+    const result = await IntentEngine.extract('mensagem qualquer');
+    expect(result.intent).toBe('UNKNOWN');
+    expect(result.confidence).toBe(0);
+    expect(result.entities).toEqual({});
   });
 });

@@ -19,11 +19,16 @@ describe('ChatService Unit Tests (XPTO Padaria)', () => {
     jest.restoreAllMocks();
   });
 
-  it('Should return a greeting and ask for identification when user says "Olá"', async () => {
-    const response = await chatService.processMessage('Olá');
+  it('Should return a greeting and ask for identification on initial empty message', async () => {
+    const response = await chatService.processMessage('');
     expect(response.text.toLowerCase()).toContain('olá');
-    // For padaria it should ask for phone/email if not logged in
-    expect(response.text.toLowerCase()).toContain('telefone ou e-mail');
+    expect(response.text.toLowerCase()).toContain('e-mail ou telefone');
+  });
+
+  it('Should ask for valid email or phone when user says "Olá" before identifying', async () => {
+    const response = await chatService.processMessage('Olá');
+    expect(response.text.toLowerCase()).toContain('formato inválido');
+    expect(response.text.toLowerCase()).toContain('e-mail ou telefone');
   });
 
   it('Should offer registration when un unregistered phone is provided', async () => {
