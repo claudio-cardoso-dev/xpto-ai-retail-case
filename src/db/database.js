@@ -1,8 +1,8 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 
-// Caminho absoluto para o banco de dados
-const dbPath = path.resolve(__dirname, 'customers.db');
+// Caminho absoluto para o banco de dados (usa :memory: em ambiente de teste para evitar SQLITE_BUSY entre suites do Jest)
+const dbPath = process.env.NODE_ENV === 'test' ? ':memory:' : path.resolve(__dirname, 'customers.db');
 const db = new sqlite3.Database(dbPath, (err) => {
   if (err) {
     console.error('Erro ao conectar ao banco de dados SQLite:', err.message);
@@ -11,6 +11,7 @@ const db = new sqlite3.Database(dbPath, (err) => {
   }
 });
 
+db.configure('busyTimeout', 5000);
 initDb();
 
 function initDb() {
@@ -83,7 +84,9 @@ function initDb() {
       )
     `);
 
-    // Inserir dados de teste (Mock) de forma serializada e idempotente
+    // Inserir dados de teste (Mock) de forma serializada e idempotente em transação única
+    db.run('BEGIN TRANSACTION');
+
     const insert = db.prepare(`INSERT OR IGNORE INTO customers (id, name, email, telefone, address, profile) VALUES (?, ?, ?, ?, ?, ?)`);
     insert.run(1, 'João Silva', 'joao@example.com', '11999999999', 'Rua A, 123', 'BTC');
     insert.run(2, 'Maria Souza', 'maria@empresa.com', '11988888888', 'Av B, 456', 'BTB');
@@ -149,6 +152,8 @@ function initDb() {
       insertProd.run(p.id, p.category, p.name, JSON.stringify(p.ingredients), p.price, p.stock, p.image);
     });
     insertProd.finalize();
+
+    db.run('COMMIT');
   });
 }
 
