@@ -15,26 +15,26 @@ class ChatService {
   constructor() {
     const apiKey = process.env.GROQ_API_KEY || "gsk_dummy_key_for_ci";
 
-    // Inicialização otimizada dos modelos
+    // Inicialização otimizada dos modelos suportados na Groq
     this.primaryLlm = new ChatGroq({
       apiKey,
-      model: "qwen/qwen3-32b",
+      model: "openai/gpt-oss-120b",
       temperature: 0.1,
-      maxRetries: 0,
+      maxRetries: 1,
     });
 
     this.fallbackLlm = new ChatGroq({
       apiKey,
-      model: "llama-3.1-8b-instant",
+      model: "openai/gpt-oss-20b",
       temperature: 0.1,
-      maxRetries: 0,
+      maxRetries: 1,
     });
 
     this.emergencyFallbackLlm = new ChatGroq({
       apiKey,
-      model: "gemma2-9b-it",
+      model: "qwen/qwen3.8-27b",
       temperature: 0.1,
-      maxRetries: 0,
+      maxRetries: 1,
     });
   }
 

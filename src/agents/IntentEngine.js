@@ -6,25 +6,25 @@ class IntentEngine {
   constructor() {
     const apiKey = process.env.GROQ_API_KEY || "gsk_dummy_key_for_ci";
 
-    const fallbackLlm = new ChatGroq({
-      apiKey,
-      model: "llama-3.1-8b-instant",
-      temperature: 0.1,
-      maxRetries: 0,
-    });
-
     const primaryLlm = new ChatGroq({
       apiKey,
-      model: "qwen/qwen3-32b", // Usar um modelo melhorzinho para NLP, ou manter 3.1
+      model: "openai/gpt-oss-120b",
       temperature: 0.1,
-      maxRetries: 0,
+      maxRetries: 1,
+    });
+
+    const fallbackLlm = new ChatGroq({
+      apiKey,
+      model: "openai/gpt-oss-20b",
+      temperature: 0.1,
+      maxRetries: 1,
     });
 
     const fallbackLlm2 = new ChatGroq({
       apiKey,
-      model: "gemma2-9b-it",
+      model: "qwen/qwen3.8-27b",
       temperature: 0.1,
-      maxRetries: 0,
+      maxRetries: 1,
     });
 
     this.schema = z.object({
